@@ -258,6 +258,7 @@ crescent -find "Konsole" -deep     # искать во всех файлах ц�
 ```sh
 ./ci/rehearsal.sh        # то же самое локально
 ./ci/rehearsal-wine.sh   # то же, но Windows-сборкой под Wine
+pwsh ./ci/rehearsal.ps1  # windows-скрипт: PowerShell есть и под Linux
 ```
 
 Wine — не Windows, а быстрый первый фильтр: он ловит ошибки, специфичные для

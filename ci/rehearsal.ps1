@@ -8,6 +8,13 @@
 
 $ErrorActionPreference = 'Stop'
 
+# Write-Lines puts one record per line, as JSONL requires, with LF endings and
+# no byte-order mark — none of which Set-Content guarantees.
+function Write-Lines([string]$Path, [string[]]$Lines) {
+    [System.IO.File]::WriteAllText($Path, ($Lines -join "`n") + "`n",
+        (New-Object System.Text.UTF8Encoding $false))
+}
+
 $root = Split-Path -Parent $PSScriptRoot
 $tmp  = Join-Path ([System.IO.Path]::GetTempPath()) ("crescent-" + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $tmp -Force | Out-Null
@@ -20,15 +27,27 @@ try {
     New-Item -ItemType Directory -Path $sessions, $workspace, (Join-Path $tmp 'bin') -Force | Out-Null
 
     $sid = '01a04f59-3ac3-7790-9f25-a0bd6c10ca2b'
-    Set-Content -Path (Join-Path $env:CODEX_HOME 'session_index.jsonl') -Encoding utf8 `
-        -Value ('{"id":"' + $sid + '","thread_name":"Konsole"}')
 
-    $wsJson  = $workspace -replace '\\', '\\'
-    $rollout = Join-Path $sessions ("rollout-a-$sid.jsonl")
-    Set-Content -Path $rollout -Encoding utf8 -Value @(
-        '{"type":"session_meta","cwd":"' + $wsJson + '"}',
-        '{"type":"goal","payload":{"goal":{"objective":"drive Konsole to a working build","status":"active"}}}'
+    # Records are built with ConvertTo-Json and written with an explicit
+    # newline join. Both matter. Hand-quoted JSON meant escaping a Windows path
+    # by hand, and `Set-Content -Value @(...)` does not write one array element
+    # per line — it stringifies the array, joining with a space, so the two
+    # records landed on one line and the file stopped being JSONL at all. The
+    # index survived only because it is a single line, which is why the symptom
+    # looked like "the goal is missing" rather than "the file is malformed".
+    $records = @(
+        @{ type = 'session_meta'; cwd = $workspace } | ConvertTo-Json -Compress
+        @{ type    = 'goal'
+           payload = @{ goal = @{ objective = 'drive Konsole to a working build'
+                                  status    = 'active' } } } | ConvertTo-Json -Compress -Depth 6
     )
+    $rollout = Join-Path $sessions ("rollout-a-$sid.jsonl")
+    Write-Lines $rollout $records
+
+    Write-Lines (Join-Path $env:CODEX_HOME 'session_index.jsonl') @(
+        @{ id = $sid; thread_name = 'Konsole' } | ConvertTo-Json -Compress
+    )
+
     # Old enough that the daemon does not mistake it for a human at work.
     (Get-Item $rollout).LastWriteTime = (Get-Date).AddDays(-2)
 
@@ -46,14 +65,25 @@ try {
     & $crescent -doctor
 
     Write-Host '--- goals ---'
+    # Joined before matching, deliberately. Against an array, -match and
+    # -notmatch filter instead of testing: `if ($lines -notmatch 'x')` is true
+    # whenever any single line fails to match, which is nearly always.
     $list = & $crescent -list
     $list
-    if ($list -notmatch 'Konsole') { throw 'chat name from the index was not picked up' }
+    if (($list -join "`n") -notmatch 'Konsole') {
+        # A failure here used to say only "no goals", which could mean anything.
+        Write-Host '--- фикстура, как она легла на диск ---'
+        Get-Content $rollout | ForEach-Object { Write-Host "   $_" }
+        & $crescent -dump
+        throw 'chat name from the index was not picked up'
+    }
 
     Write-Host '--- one supervised turn ---'
     $once = & $crescent -run-once -read-only -yes
     $once
-    if ($once -notmatch 'turn\.completed') { throw 'the event stream was not parsed' }
+    if (($once -join "`n") -notmatch 'turn\.completed') {
+        throw 'the event stream was not parsed'
+    }
 
     Write-Host '--- daemon: self-check, turns, limit, wait ---'
     Set-Content -Path $env:MOCK_COUNTER -Value '0'
@@ -66,7 +96,7 @@ try {
     foreach ($_ in 1..60) {
         Start-Sleep -Seconds 1
         $status = & $crescent -status 2>$null
-        if ($status -match 'лимит') { $reached = $true; break }
+        if (($status -join "`n") -match 'лимит') { $reached = $true; break }
     }
     if (-not $daemon.HasExited) { Stop-Process -Id $daemon.Id -Force }
 

@@ -48,6 +48,15 @@ jobs:
       - name: Windows build rehearsed under Wine
         run: ./ci/rehearsal-wine.sh
 
+      # The Windows rehearsal is a PowerShell script, and PowerShell has its own
+      # ways to go wrong that have nothing to do with Windows: Set-Content does
+      # not write one array element per line, and -match against an array
+      # filters instead of testing. Both bugs cost a round trip through CI
+      # before pwsh was available here. It runs on Linux, so now it is.
+      - name: Windows rehearsal script checked under pwsh
+        shell: pwsh
+        run: ./ci/rehearsal.ps1
+
       - name: Cross-compile
         run: |
           set -e
