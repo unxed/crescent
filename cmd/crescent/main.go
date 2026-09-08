@@ -37,11 +37,33 @@ func main() {
 	doctor := flag.Bool("doctor", false, "check the machine: codex CLI, its flags, Go caches, workspaces")
 	plan := flag.Bool("plan", false, "print what crescent would run, without running anything")
 	codexPath := flag.String("codex", "", "path to the codex binary (overrides the search and "+runner.EnvCodex+")")
-	runOnce := flag.String("run-once", "", "resume exactly one turn of the session with this id, then stop")
+	list := flag.Bool("list", false, "print the numbered list of goals and exit")
+	runOnce := flag.Bool("run-once", false, "resume exactly one turn, then stop; takes a number, id prefix or goal text")
 	readOnly := flag.Bool("read-only", false, "with -run-once: force --sandbox read-only (recommended for the first run)")
 	rawTo := flag.String("raw", "", "with -run-once: write the raw --json stream to this file")
 	prompt := flag.String("prompt", "", "message used to wake the session")
 	flag.Parse()
+
+	// Go's flag package stops parsing at the first positional argument, so
+	// `-run-once 1 -read-only` would silently drop -read-only and run with a
+	// writable sandbox — the exact opposite of what was asked for. Keep
+	// consuming: positionals become the selector, flags are parsed wherever
+	// they appear.
+	selector := ""
+	for rest := flag.Args(); len(rest) > 0; rest = flag.Args() {
+		if strings.HasPrefix(rest[0], "-") {
+			if err := flag.CommandLine.Parse(rest); err != nil {
+				os.Exit(2)
+			}
+			continue
+		}
+		if selector == "" {
+			selector = rest[0]
+		}
+		if err := flag.CommandLine.Parse(rest[1:]); err != nil {
+			os.Exit(2)
+		}
+	}
 
 	if *codexPath != "" {
 		os.Setenv(runner.EnvCodex, *codexPath)
@@ -60,12 +82,17 @@ func main() {
 
 	sessions, scanErr := codex.Scan(dir)
 
-	if *runOnce != "" {
+	if *list || *runOnce {
 		if scanErr != nil {
 			fmt.Fprintln(os.Stderr, "не удалось прочитать", dir+":", scanErr)
 			os.Exit(1)
 		}
-		if err := doRunOnce(sessions, *runOnce, *readOnly, *rawTo, *prompt); err != nil {
+		goals := runner.Goals(sessions)
+		if *list {
+			runner.WriteList(os.Stdout, goals, workspaceLive)
+			return
+		}
+		if err := doRunOnce(goals, selector, *readOnly, *rawTo, *prompt); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -332,17 +359,24 @@ func runPlan(sessions []codex.Session) {
 // doRunOnce resumes one named session for a single turn and reports what
 // happened. It is deliberately a separate mode from the queue: before anything
 // runs unattended, one turn should be watched by a human.
-func doRunOnce(sessions []codex.Session, id string, readOnly bool, rawPath, prompt string) error {
-	var target *codex.Session
-	for i := range sessions {
-		if sessions[i].ID == id {
-			target = &sessions[i]
-			break
-		}
+func doRunOnce(goals []codex.Session, selector string, readOnly bool, rawPath, prompt string) error {
+	if len(goals) == 0 {
+		return fmt.Errorf("целей не найдено; проверьте crescent -dump")
 	}
-	if target == nil {
-		return fmt.Errorf("сессия %s не найдена; список: crescent -dump", id)
+
+	// No selector means "show me what there is": typing a 36-character uuid by
+	// hand is not a user interface.
+	var target codex.Session
+	var err error
+	if strings.TrimSpace(selector) == "" {
+		target, err = runner.Pick(os.Stdin, os.Stdout, goals, workspaceLive)
+	} else {
+		target, err = runner.Resolve(goals, selector)
 	}
+	if err != nil {
+		return err
+	}
+	fmt.Println()
 
 	pol := runner.DefaultPolicy()
 	if prompt != "" {
@@ -362,7 +396,13 @@ func doRunOnce(sessions []codex.Session, id string, readOnly bool, rawPath, prom
 		opts.RawTo = f
 	}
 
+	if !workspaceLive(target) {
+		return fmt.Errorf("у цели %q рабочий каталог %s не существует — продолжать нечего",
+			target.Title(), target.Cwd)
+	}
+
 	fmt.Printf("Цель:    %s\n", target.Title())
+	fmt.Printf("id:      %s\n", target.ID)
 	fmt.Printf("Каталог: %s\n", target.Cwd)
 	if readOnly {
 		fmt.Println("Песочница: read-only — запись невозможна, это проверка связки.")
@@ -371,7 +411,7 @@ func doRunOnce(sessions []codex.Session, id string, readOnly bool, rawPath, prom
 	}
 	fmt.Println("\nСобытия:")
 
-	res, err := runner.RunOnce(context.Background(), pol, *target, opts)
+	res, err := runner.RunOnce(context.Background(), pol, target, opts)
 	if err != nil {
 		return err
 	}
@@ -403,6 +443,13 @@ func doRunOnce(sessions []codex.Session, id string, readOnly bool, rawPath, prom
 		fmt.Println("через -raw и пришлите — формат событий поменялся.")
 	}
 	return nil
+}
+
+// workspaceLive reports whether a session's working directory still exists.
+// Many sessions ran out of /tmp and did not survive a reboot.
+func workspaceLive(s codex.Session) bool {
+	fi, err := os.Stat(s.Cwd)
+	return err == nil && fi.IsDir()
 }
 
 // shellLine renders argv so it can be pasted into a terminal as-is. The prompt
