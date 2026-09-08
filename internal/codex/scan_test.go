@@ -390,7 +390,7 @@ func TestObjectiveProvenanceIsRecorded(t *testing.T) {
 func TestConversationTitleIsPickedUp(t *testing.T) {
 	dir := t.TempDir()
 	p := write(t, dir, "rollout-1.jsonl",
-		`{"type":"session_meta","title":"Лунобот-2: статус тикетов"}`+"\n"+
+		`{"type":"session_meta","conversation_title":"Лунобот-2: статус тикетов"}`+"\n"+
 			`{"type":"goal","goal":{"objective":"Проект Лунобот-2. Следуй приложенной инструкции.","status":"active"}}`)
 
 	s, _ := ScanFile(p)
@@ -425,7 +425,7 @@ func TestLongOrMultilineTextIsNotATitle(t *testing.T) {
 	dir := t.TempDir()
 	long := strings.Repeat("очень длинный текст ", 20)
 	p := write(t, dir, "rollout-1.jsonl",
-		`{"name":"`+long+`"}`+"\n"+`{"summary":"первая строка\nвторая строка"}`)
+		`{"thread_title":"`+long+`"}`+"\n"+`{"chat_title":"первая строка\nвторая строка"}`)
 
 	s, _ := ScanFile(p)
 	if s.Name != "" {
@@ -438,11 +438,27 @@ func TestLongOrMultilineTextIsNotATitle(t *testing.T) {
 func TestLaterTitleWinsWithinTheSameRank(t *testing.T) {
 	dir := t.TempDir()
 	p := write(t, dir, "rollout-1.jsonl",
-		`{"title":"Новый чат"}`+"\n"+`{"title":"Починка ConPTY"}`)
+		`{"thread_title":"Новый чат"}`+"\n"+`{"thread_title":"Починка ConPTY"}`)
 
 	s, _ := ScanFile(p)
 	if s.Name != "Починка ConPTY" {
 		t.Errorf("Name = %q, want the later title", s.Name)
+	}
+}
+
+// Real data: bare `title` and `name` carried a config value and the title of a
+// web page the agent had opened, and the list confidently showed "exec",
+// "auto" and "lunobot/LUNOBOT.md at main · unxed/lunobot · GitHub" as chat
+// names. Showing nothing is better than showing that.
+func TestGenericKeysAreNotTreatedAsChatTitles(t *testing.T) {
+	dir := t.TempDir()
+	p := write(t, dir, "rollout-1.jsonl",
+		`{"sandbox":{"name":"exec"},"approval":{"title":"auto"}}`+"\n"+
+			`{"web":{"title":"lunobot/LUNOBOT.md at main · unxed/lunobot · GitHub"}}`)
+
+	s, _ := ScanFile(p)
+	if s.Name != "" {
+		t.Errorf("Name = %q, want empty: none of these is a chat title", s.Name)
 	}
 }
 

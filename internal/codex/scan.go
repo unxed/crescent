@@ -301,12 +301,12 @@ func (s *Session) applyRecord(v any) {
 					}
 				}
 			}
+		// Only qualified keys. On real data the bare ones matched a config
+		// value ("exec", "auto") and the title of a web page the agent had
+		// opened, so the list showed confident nonsense. Until `crescent -find`
+		// identifies the real key, no name beats a wrong name.
 		case "chattitle", "threadtitle", "conversationtitle", "sessiontitle":
 			s.setName(val, key, 3)
-		case "title":
-			s.setName(val, key, 2)
-		case "name", "summary", "label":
-			s.setName(val, key, 1)
 		case "goalstatus":
 			if str, ok := val.(string); ok && str != "" {
 				s.Status = GoalStatus(str)

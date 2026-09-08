@@ -44,6 +44,8 @@ func main() {
 	prompt := flag.String("prompt", "", "message used to wake the session")
 	yes := flag.Bool("yes", false, "with -run-once: take the offered goal without asking")
 	gui := flag.Bool("gui", false, "open the window (it is still a viewer: nothing can be started from it)")
+	find := flag.String("find", "", "find which JSON key holds this text (e.g. a chat name you can see in the app)")
+	deep := flag.Bool("deep", false, "with -find: read whole rollout files, not just the part the scanner reads")
 	flag.Parse()
 
 	// Go's flag package stops parsing at the first positional argument, so
@@ -83,6 +85,14 @@ func main() {
 	}
 
 	sessions, scanErr := codex.Scan(dir)
+
+	if *find != "" {
+		if err := runFind(dir, *find, *deep); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if *gui {
 		if scanErr != nil {
