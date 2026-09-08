@@ -181,6 +181,17 @@ func (l *Loop) step(ctx context.Context) time.Duration {
 	l.bump(func(s *Status) { s.Turns++ })
 
 	switch {
+	case res.Failure == FailOutOfCredits:
+		// Not a wait. No window opens on its own here, so sitting in the loop
+		// would mean sitting forever; a person has to act.
+		l.bump(func(s *Status) { s.Errors++ })
+		msg := "кредиты кончились — ожидание не поможет"
+		if len(res.Errors) > 0 {
+			msg = res.Errors[0]
+		}
+		l.setState(StateFailed, msg, time.Time{}, &goal)
+		return l.Tick
+
 	case res.UsageLimited:
 		l.bump(func(s *Status) { s.Limits++ })
 		until := res.ResetsAt

@@ -36,9 +36,11 @@ func session(t *testing.T) codex.Session {
 }
 
 func TestRunOnceReadsTheEventStream(t *testing.T) {
+	// Shapes taken from codex-rs/exec/src/exec_events.rs.
 	stream := `{"type":"thread.started","thread_id":"abc"}
-{"type":"item.completed","item":{"type":"agent_message","text":"Готово, тесты зелёные."}}
-{"type":"turn.completed"}`
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Готово, тесты зелёные."}}
+{"type":"turn.completed","usage":{"input_tokens":1200,"output_tokens":340,"cached_input_tokens":0,"reasoning_output_tokens":90}}`
 
 	p := DefaultPolicy()
 	p.CodexPath = fakeCodex(t, stream, 0)
@@ -48,14 +50,20 @@ func TestRunOnceReadsTheEventStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Lines != 3 || res.Parsed != 3 {
-		t.Errorf("lines=%d parsed=%d, want 3/3", res.Lines, res.Parsed)
+	if res.Lines != 4 || res.Parsed != 4 {
+		t.Errorf("lines=%d parsed=%d, want 4/4", res.Lines, res.Parsed)
+	}
+	if res.InputTokens != 1200 || res.OutputTokens != 340 {
+		t.Errorf("tokens = %d/%d, want 1200/340", res.InputTokens, res.OutputTokens)
 	}
 	if res.ExitCode != 0 {
 		t.Errorf("ExitCode = %d", res.ExitCode)
 	}
 	if res.LastMessage != "Готово, тесты зелёные." {
 		t.Errorf("LastMessage = %q", res.LastMessage)
+	}
+	if res.EventTypes["item.completed:agent_message"] != 1 {
+		t.Errorf("item type not folded into the event name: %v", res.EventTypes)
 	}
 	if res.EventTypes["turn.completed"] != 1 {
 		t.Errorf("event types not counted: %v", res.EventTypes)
@@ -71,8 +79,11 @@ func TestRunOnceReadsTheEventStream(t *testing.T) {
 // The one outcome crescent exists for. The wrapper around this message has
 // changed before, so it is detected from the whole line, not one field.
 func TestRunOnceDetectsUsageLimitAndReset(t *testing.T) {
-	reset := time.Now().Add(4 * time.Hour).UTC().Format(time.RFC3339)
-	stream := `{"type":"turn.failed","error":{"message":"You've hit your usage limit.","codexErrorInfo":"UsageLimitExceeded","resets_at":"` + reset + `"}}`
+	// The real event carries only a message: no error code, no timestamp, so
+	// the reset moment has to come out of the sentence.
+	at := time.Now().Add(4 * time.Hour).Truncate(time.Minute)
+	stream := `{"type":"turn.failed","error":{"message":"You have hit your usage limit. Try again at ` +
+		at.Format("3:04 PM") + `."}}`
 
 	p := DefaultPolicy()
 	p.CodexPath = fakeCodex(t, stream, 1)
@@ -85,7 +96,10 @@ func TestRunOnceDetectsUsageLimitAndReset(t *testing.T) {
 		t.Fatal("usage limit not detected")
 	}
 	if res.ResetsAt.IsZero() {
-		t.Error("reset time not picked up from the failure event")
+		t.Fatal("reset time not recovered from the message")
+	}
+	if d := res.ResetsAt.Sub(at); d < -time.Minute || d > time.Minute {
+		t.Errorf("ResetsAt = %v, want about %v", res.ResetsAt, at)
 	}
 	if res.ExitCode != 1 {
 		t.Errorf("ExitCode = %d, want the non-zero exit preserved", res.ExitCode)
@@ -117,7 +131,7 @@ func TestReadOnlyOptionDropsWriteAccess(t *testing.T) {
 // truncate them into invalid JSON and silently lose the rest of the turn.
 func TestRunOnceHandlesVeryLongLines(t *testing.T) {
 	big := strings.Repeat("x", 300_000)
-	stream := `{"type":"item.completed","text":"` + big + `"}`
+	stream := `{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"` + big + `"}}`
 
 	p := DefaultPolicy()
 	p.CodexPath = fakeCodex(t, stream, 0)

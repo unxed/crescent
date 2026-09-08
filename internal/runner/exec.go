@@ -40,10 +40,14 @@ type Result struct {
 	Lines        int
 	Parsed       int
 	UsageLimited bool
+	Failure      Failure
 	ResetsAt     time.Time
 	LastMessage  string
 	Errors       []string
 	EventTypes   map[string]int
+
+	// Tokens from turn.completed, for a report that says what the turn cost.
+	InputTokens, OutputTokens int64
 }
 
 // RunOnce resumes a session for exactly one turn and reports what happened.
@@ -104,64 +108,91 @@ func RunOnce(ctx context.Context, p Policy, s codex.Session, o Options) (Result,
 	return res, nil
 }
 
-// absorb classifies one line of the stream. Like the rollout parser, it does
-// not assume a schema: it walks whatever JSON arrived and recognises keys it
-// knows, so a renamed wrapper does not blind it.
+// absorb classifies one line of the stream.
+//
+// The event types are known exactly (see events.go), so the common shapes are
+// read directly. The tolerant walk is kept underneath as a safety net: the
+// schema has changed before, and a renamed wrapper should degrade the report,
+// not blind it.
 func (r *Result) absorb(line string, trace io.Writer, start time.Time) {
-	var v any
-	if json.Unmarshal([]byte(line), &v) != nil {
+	var ev struct {
+		Type  string `json:"type"`
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+		Message string `json:"message"`
+		Usage   struct {
+			InputTokens  int64 `json:"input_tokens"`
+			OutputTokens int64 `json:"output_tokens"`
+		} `json:"usage"`
+		Item struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"item"`
+	}
+	if json.Unmarshal([]byte(line), &ev) != nil {
 		return
 	}
 	r.Parsed++
 
-	var kind, text, errText string
-	codex.Walk(v, func(key string, val any) {
-		s, isStr := val.(string)
-		switch strings.ToLower(strings.ReplaceAll(key, "_", "")) {
-		case "type", "msgtype", "event":
-			if isStr && kind == "" {
-				kind = s
-			}
-		case "text", "message", "delta", "content":
-			if isStr && s != "" && len(s) > len(text) {
-				text = s
-			}
-		case "error", "errormessage":
-			if isStr && s != "" {
-				errText = s
-			}
-		case "codexerrorinfo":
-			if isStr {
-				errText = s
-			}
-		case "resetsat", "resetat":
-			if t, ok := codex.ParseTime(val); ok {
-				r.ResetsAt = t
+	kind := ev.Type
+	var text string
+
+	switch ev.Type {
+	case "turn.completed":
+		r.InputTokens += ev.Usage.InputTokens
+		r.OutputTokens += ev.Usage.OutputTokens
+
+	case "turn.failed", "error":
+		msg := ev.Error.Message
+		if msg == "" {
+			msg = ev.Message
+		}
+		if msg != "" {
+			r.Errors = append(r.Errors, msg)
+			r.LastMessage = msg
+		}
+		if f := classifyFailure(msg); f != FailNone {
+			r.Failure = f
+			r.UsageLimited = f == FailUsageLimit
+			if at, ok := parseRetryAt(msg, time.Now()); ok {
+				r.ResetsAt = at
 			}
 		}
-	})
+
+	case "item.started", "item.updated", "item.completed":
+		if ev.Item.Type != "" {
+			kind = ev.Type + ":" + ev.Item.Type
+		}
+		text = ev.Item.Text
+		if ev.Item.Type == ItemAgentMessage && text != "" {
+			r.LastMessage = text
+		}
+	}
+
+	// Safety net for a schema that moves: pick up a reset timestamp or a
+	// usage-limit wording wherever they might appear.
+	if r.ResetsAt.IsZero() || r.Failure == FailNone {
+		var v any
+		if json.Unmarshal([]byte(line), &v) == nil {
+			codex.Walk(v, func(key string, val any) {
+				switch strings.ToLower(strings.ReplaceAll(key, "_", "")) {
+				case "resetsat", "resetat":
+					if t, ok := codex.ParseTime(val); ok && r.ResetsAt.IsZero() {
+						r.ResetsAt = t
+					}
+				case "codexerrorinfo":
+					if s, ok := val.(string); ok && strings.Contains(strings.ToLower(s), "limit") {
+						r.Failure, r.UsageLimited = FailUsageLimit, true
+					}
+				}
+			})
+		}
+	}
 
 	if kind != "" {
 		r.EventTypes[kind]++
 	}
-	if text != "" {
-		r.LastMessage = text
-	}
-
-	// A usage limit is the one outcome crescent exists for, so it is detected
-	// from the whole line rather than from one field: the wrapper around the
-	// message has changed before and will again.
-	low := strings.ToLower(line)
-	for _, marker := range []string{"usagelimit", "usage limit", "ratelimitreached", "rate_limit_reached", "you've hit your usage limit"} {
-		if strings.Contains(low, marker) {
-			r.UsageLimited = true
-			break
-		}
-	}
-	if errText != "" {
-		r.Errors = append(r.Errors, errText)
-	}
-
 	if trace != nil && kind != "" {
 		fmt.Fprintf(trace, "  [%6.1fs] %-28s %s\n",
 			time.Since(start).Seconds(), kind, oneLine(text, 70))

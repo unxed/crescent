@@ -101,7 +101,7 @@ func TestProbeReportsAFormatChange(t *testing.T) {
 // proves the machinery works.
 func TestProbeTreatsAUsageLimitAsSuccess(t *testing.T) {
 	script := "#!/bin/sh\n" +
-		`echo '{"type":"turn.failed","error":{"codexErrorInfo":"UsageLimitExceeded"}}'` + "\nexit 1\n"
+		`echo '{"type":"turn.failed","error":{"message":"You have hit your usage limit. Try again later."}}'` + "\nexit 1\n"
 	l, _ := loopEnv(t, goalRollout(t), script)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -114,10 +114,10 @@ func TestProbeTreatsAUsageLimitAsSuccess(t *testing.T) {
 // The whole point of the daemon: after a turn that hit the limit, it waits
 // instead of hammering.
 func TestLoopWaitsAfterHittingTheLimit(t *testing.T) {
-	reset := time.Now().Add(3 * time.Hour).UTC().Format(time.RFC3339)
+	resetLocal := time.Now().Add(3 * time.Hour).Format("3:04 PM")
 	script := "#!/bin/sh\n" +
 		`echo '{"type":"thread.started"}'` + "\n" +
-		`echo '{"type":"turn.failed","error":{"codexErrorInfo":"UsageLimitExceeded","resets_at":"` + reset + `"}}'` + "\n" +
+		`echo '{"type":"turn.failed","error":{"message":"You have hit your usage limit. Try again at ` + resetLocal + `."}}'` + "\n" +
 		"exit 1\n"
 	l, _ := loopEnv(t, goalRollout(t), script)
 	l.ReadOnlyProbe = false
