@@ -219,23 +219,43 @@ func runRestart(codexPath string, dry bool, prompt string, verbose bool) error {
 		// difference between a careful tool and one that hammers a closed door.
 		return fmt.Errorf("состояние лимитов не выяснено, ничего не запускаю: %w", err)
 	}
-	if limited, at := limits.Exhausted(); limited {
+
+	limited, at := limits.Exhausted()
+	if limited {
+		// Said plainly, because the limit belongs to the account and not to any
+		// one goal: a bare "limit reached" reads as if some particular chat had
+		// run out, which would be a different and much smaller problem.
+		fmt.Print("Лимит аккаунта исчерпан — он общий на все цели сразу")
 		if at.IsZero() {
-			fmt.Println("Лимит исчерпан, время сброса сервер не назвал — ждём.")
+			fmt.Println(", время сброса сервер не назвал.")
 		} else {
-			fmt.Printf("Лимит исчерпан, сброс в %s (через %s) — ждём.\n",
+			fmt.Printf(", сброс в %s (через %s).\n",
 				at.Local().Format("15:04"), time.Until(at).Round(time.Minute))
 		}
-		return nil
+	} else {
+		fmt.Println("Лимит аккаунта позволяет работать.")
 	}
-	fmt.Println("Лимит позволяет работать.")
 
+	// The queue is shown either way. A dry run that stops at the limit answers
+	// the wrong question: what is asked is which goals would be pushed, and
+	// that does not depend on whether the window happens to be open now.
 	candidates, err := client.Candidates(ctx)
 	if err != nil {
 		return err
 	}
 	if len(candidates) == 0 {
 		fmt.Println("Остановленных целей нет.")
+		return nil
+	}
+
+	if limited {
+		fmt.Printf("\nЖдут сброса (%d):\n", len(candidates))
+		for _, c := range candidates {
+			fmt.Printf(" • %-34s [%s]  %s\n",
+				short(orDash(c.Thread.Label()), 34), orDash(c.Goal.Status),
+				short(c.Goal.Objective, 60))
+		}
+		fmt.Println("\nПосле сброса эти цели можно будет запустить тем же crescent -restart.")
 		return nil
 	}
 
