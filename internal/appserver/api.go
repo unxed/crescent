@@ -18,22 +18,14 @@ import (
 // response wraps that under `rateLimits`. Guessing at the wrapper produced a
 // client that got clean answers and found nothing in them.
 type RateLimitWindow struct {
-	ResetsAt           string  `json:"resetsAt"`
-	UsedPercent        float64 `json:"usedPercent"`
-	WindowDurationMins int64   `json:"windowDurationMins"`
+	ResetsAt           Timestamp `json:"resetsAt"`
+	UsedPercent        float64   `json:"usedPercent"`
+	WindowDurationMins int64     `json:"windowDurationMins"`
 }
 
 // ResetAt returns when this window opens again, if the server said.
 func (w RateLimitWindow) ResetAt() (time.Time, bool) {
-	if w.ResetsAt == "" {
-		return time.Time{}, false
-	}
-	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
-		if t, err := time.Parse(layout, w.ResetsAt); err == nil {
-			return t, true
-		}
-	}
-	return time.Time{}, false
+	return w.ResetsAt.Time, w.ResetsAt.Valid
 }
 
 // Label names the window by its length: a five-hour rolling allowance and a

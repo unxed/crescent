@@ -126,6 +126,13 @@ func runDoctor(codexPath string, verbose, showRaw bool) error {
 		return fmt.Errorf("thread/list: %w", err)
 	}
 	fmt.Printf("   тредов получено: %d\n", len(threads))
+	if len(threads) == 0 {
+		// Printed without being asked: an empty list with no error means the
+		// answer was read wrongly, and the answer itself is the only thing
+		// that settles it.
+		fmt.Println("   пусто — вот что прислал сервер:")
+		fmt.Println("  ", short(string(rawThreads), 1200))
+	}
 
 	shown := 0
 	for _, t := range threads {

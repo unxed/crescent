@@ -9,7 +9,11 @@ import (
 // The first attempt guessed the wrappers, got clean answers from a real server
 // and reported nothing at all — a failure that looks exactly like success.
 func TestRateLimitWindowFromSchemaShape(t *testing.T) {
-	w := RateLimitWindow{ResetsAt: "2026-09-08T22:33:00Z", UsedPercent: 100, WindowDurationMins: 300}
+	w := RateLimitWindow{
+		ResetsAt:           Timestamp{Time: time.Date(2026, 9, 8, 22, 33, 0, 0, time.UTC), Valid: true},
+		UsedPercent:        100,
+		WindowDurationMins: 300,
+	}
 	got, ok := w.ResetAt()
 	if !ok || !got.Equal(time.Date(2026, 9, 8, 22, 33, 0, 0, time.UTC)) {
 		t.Errorf("ResetAt = %v/%v", got, ok)
@@ -26,8 +30,8 @@ func TestRateLimitWindowFromSchemaShape(t *testing.T) {
 }
 
 func TestExhaustedPicksTheNearestSpentWindow(t *testing.T) {
-	soon := time.Now().Add(55 * time.Minute).UTC().Format(time.RFC3339)
-	late := time.Now().Add(150 * time.Hour).UTC().Format(time.RFC3339)
+	soon := Timestamp{Time: time.Now().Add(55 * time.Minute), Valid: true}
+	late := Timestamp{Time: time.Now().Add(150 * time.Hour), Valid: true}
 
 	limits := RateLimits{
 		Primary:   &RateLimitWindow{UsedPercent: 100, ResetsAt: soon, WindowDurationMins: 300},
@@ -51,7 +55,7 @@ func TestExhaustedPicksTheNearestSpentWindow(t *testing.T) {
 // percentages or reset times. When the backend states its verdict, it wins.
 func TestBackendVerdictOverridesArithmetic(t *testing.T) {
 	no := false
-	soon := time.Now().Add(30 * time.Minute).UTC().Format(time.RFC3339)
+	soon := Timestamp{Time: time.Now().Add(30 * time.Minute), Valid: true}
 	limits := RateLimits{
 		Primary:              &RateLimitWindow{UsedPercent: 3, ResetsAt: soon},
 		OrdinaryUsageAllowed: &no,
@@ -77,5 +81,32 @@ func TestGoalAndThreadLabels(t *testing.T) {
 	}
 	if got := (Thread{Name: "Konsole", Preview: "x"}).Label(); got != "Konsole" {
 		t.Errorf("Label = %q", got)
+	}
+}
+
+// The schema types resetsAt as a string; the running server sends a number.
+// Both have to work, or the client is right about the documentation and wrong
+// about reality.
+func TestTimestampAcceptsStringAndNumber(t *testing.T) {
+	want := time.Date(2026, 9, 8, 22, 33, 0, 0, time.UTC)
+	cases := map[string]string{
+		"строка RFC3339": `"2026-09-08T22:33:00Z"`,
+		"секунды":        `1788906780`,
+		"миллисекунды":   `1788906780000`,
+	}
+	for name, body := range cases {
+		var ts Timestamp
+		if err := ts.UnmarshalJSON([]byte(body)); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !ts.Valid || !ts.Time.UTC().Truncate(time.Second).Equal(want) {
+			t.Errorf("%s: got %v/%v, want %v", name, ts.Time.UTC(), ts.Valid, want)
+		}
+	}
+	for _, body := range []string{"null", `""`, "0"} {
+		var ts Timestamp
+		if err := ts.UnmarshalJSON([]byte(body)); err != nil || ts.Valid {
+			t.Errorf("%s принят за время", body)
+		}
 	}
 }
