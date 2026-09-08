@@ -35,6 +35,7 @@ type Client struct {
 	nextID   int
 	pending  map[int]chan rpcResponse
 	notify   func(method string, params json.RawMessage)
+	activity func(Activity)
 	closed   bool
 	closeErr error
 }
@@ -65,9 +66,12 @@ func (e *rpcError) Error() string { return fmt.Sprintf("%s (code %d)", e.Message
 type Options struct {
 	// CodexPath is the binary to run. Required.
 	CodexPath string
-	// OnNotification receives server-initiated messages, which is how the
-	// reset of a usage limit arrives without polling for it.
+	// OnNotification receives every server-initiated message, raw. Most callers
+	// want OnActivity instead.
 	OnNotification func(method string, params json.RawMessage)
+	// OnActivity receives notifications already distilled to a readable line,
+	// which is what a per-goal log wants.
+	OnActivity func(Activity)
 	// Stderr receives the server's diagnostics; nil discards them.
 	Stderr io.Writer
 }
@@ -96,11 +100,12 @@ func Dial(ctx context.Context, o Options) (*Client, error) {
 	}
 
 	c := &Client{
-		cmd:     cmd,
-		in:      in,
-		out:     bufio.NewScanner(out),
-		pending: map[int]chan rpcResponse{},
-		notify:  o.OnNotification,
+		cmd:      cmd,
+		in:       in,
+		out:      bufio.NewScanner(out),
+		pending:  map[int]chan rpcResponse{},
+		notify:   o.OnNotification,
+		activity: o.OnActivity,
 	}
 	// A single message can carry a whole file's worth of diff.
 	c.out.Buffer(make([]byte, 0, 256<<10), 64<<20)
@@ -143,6 +148,11 @@ func (c *Client) readLoop() {
 		if msg.Method != "" && msg.ID == 0 {
 			if c.notify != nil {
 				c.notify(msg.Method, msg.Params)
+			}
+			if c.activity != nil {
+				if a, ok := Interpret(msg.Method, msg.Params); ok {
+					c.activity(a)
+				}
 			}
 			continue
 		}
@@ -205,6 +215,14 @@ func (c *Client) Call(ctx context.Context, method string, params any) (json.RawM
 		}
 		return resp.Result, nil
 	}
+}
+
+// SetActivitySink installs the interpreted-activity callback after Dial, which
+// is when a journal is usually ready.
+func (c *Client) SetActivitySink(fn func(Activity)) {
+	c.mu.Lock()
+	c.activity = fn
+	c.mu.Unlock()
 }
 
 // Close shuts the server down.

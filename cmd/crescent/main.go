@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/unxed/crescent/internal/appserver"
@@ -24,9 +25,28 @@ func main() {
 	verbose := flag.Bool("v", false, "показывать диагностику app-server")
 	raw := flag.Bool("raw", false, "печатать сырые ответы сервера")
 	restart := flag.Bool("restart", false, "перезапустить остановленные цели, если лимит позволяет")
+	gui := flag.Bool("gui", false, "окно: отметить цели галочками и вести их в фоне")
+	watch := flag.String("watch", "", "вести названные цели в терминале (через запятую; пусто — все закреплённые)")
 	dry := flag.Bool("dry-run", false, "с -restart: показать, что было бы сделано, и не делать")
 	prompt := flag.String("prompt", "Продолжай работу над текущей целью.", "чем будить цель")
 	flag.Parse()
+
+	if *gui {
+		if err := runDesktop(*codexPath, *prompt, *verbose); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if *watch != "" || hasFlag("watch") {
+		sels := splitList(*watch)
+		if err := runWatch(*codexPath, sels, *prompt, *verbose, 30*time.Second); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if *restart {
 		if err := runRestart(*codexPath, *dry, *prompt, *verbose); err != nil {
@@ -178,6 +198,26 @@ func runDoctor(codexPath string, verbose, showRaw bool) error {
 		fmt.Println("\n   ни у одного треда нет цели")
 	}
 	return nil
+}
+
+func hasFlag(name string) bool {
+	found := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			found = true
+		}
+	})
+	return found
+}
+
+func splitList(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func orDash(s string) string {
