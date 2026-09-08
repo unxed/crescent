@@ -81,46 +81,47 @@ func runDump(dir string, sessions []codex.Session, scanErr error, withKeys bool)
 	// carries a snapshot, but an old one only records the window that was
 	// current when that session last ran — which is why a directory of old
 	// sessions is full of reset times that lapsed days ago.
-	fmt.Println("Лимиты аккаунта (по самому свежему rollout-файлу):")
+	fmt.Println("Лимиты аккаунта (снимок из самого свежего rollout-файла):")
 	if from, windows, ok := codex.AccountLimits(sessions); ok {
-		fmt.Printf("    источник: %s (изменён %s)\n",
-			filepath.Base(from.Path), from.Modified.Format("2006-01-02 15:04:05"))
+		live := 0
 		for _, w := range windows {
-			mark := "истекло"
-			if d := time.Until(w.At); d > 0 {
-				mark = "через " + d.Round(time.Minute).String()
+			if time.Until(w.At) <= 0 {
+				continue
 			}
-			fmt.Printf("    %-14s %s  (%s)   [поле: %s]\n",
-				mark, w.At.Local().Format("2006-01-02 15:04:05"), humanWindow(w.At), w.Key)
+			live++
+			fmt.Printf("    %-9s до %s   (%s)\n",
+				"через "+time.Until(w.At).Round(time.Minute).String(),
+				w.At.Local().Format("2006-01-02 15:04"), humanWindow(w.At))
 		}
-		if next := codex.NextReset(sessions); next.IsZero() {
-			fmt.Println("    ни одно окно не активно — лимит сейчас не мешает")
+		if live == 0 {
+			fmt.Println("    все окна уже прошли — лимит сейчас не мешает")
 		}
+		fmt.Printf("    снимок от %s\n", from.Modified.Format("2006-01-02 15:04:05"))
 	} else {
 		fmt.Println("    не найдено")
 	}
 	fmt.Println()
 
-	shown := 0
+	fmt.Println("Цели:")
+	skipped := 0
 	for _, s := range sessions {
-		if !s.HasGoal() && shown >= 5 {
-			continue // list a few goal-less files, then stop padding the report
+		// Sessions without a goal are the overwhelming majority and there is
+		// nothing to resume in them; counting them is enough.
+		if !s.HasGoal() {
+			skipped++
+			continue
 		}
-		shown++
-		fmt.Printf("• %s\n", s.Title())
-		fmt.Printf("    файл:     %s (%d КиБ, изменён %s)\n",
-			s.Path, s.Size/1024, s.Modified.Format("2006-01-02 15:04:05"))
-		fmt.Printf("    id:       %s  [из: %s]\n", orDash(s.ID), orDash(s.IDKey))
-		fmt.Printf("    cwd:      %s\n", orDash(s.Cwd))
+		fmt.Printf("\n• %s\n", s.Title())
+		fmt.Printf("    %s  •  %s  •  изменён %s\n",
+			orDash(string(s.Status)), orDash(s.Cwd), s.Modified.Format("2006-01-02 15:04"))
+		fmt.Printf("    id %s", orDash(s.ID))
 		if s.ParentID != "" {
-			fmt.Printf("    продолж.: %s\n", s.ParentID)
+			fmt.Printf(", продолжает %s", s.ParentID)
 		}
-		fmt.Printf("    статус:   %s (возобновляемый: %v)\n", orDash(string(s.Status)), s.Status.Resumable())
-		if s.ObjectiveKey != "" {
-			fmt.Printf("    цель из:  поле %q\n", s.ObjectiveKey)
-		}
-		fmt.Printf("    окна:     %s\n", windowSummary(s))
+		fmt.Printf("  [%s]\n", orDash(s.IDKey))
+		fmt.Printf("    %s\n", filepath.Base(s.Path))
 	}
+	fmt.Printf("\nБез цели пропущено: %d\n", skipped)
 
 	if goals == 0 && len(sessions) > 0 {
 		fmt.Println()
@@ -168,21 +169,6 @@ func humanWindow(at time.Time) string {
 	default:
 		return "похоже на недельное окно"
 	}
-}
-
-func windowSummary(s codex.Session) string {
-	if len(s.Resets) == 0 {
-		return "не найдены"
-	}
-	parts := make([]string, 0, len(s.Resets))
-	for _, r := range s.Resets {
-		parts = append(parts, r.At.Local().Format("01-02 15:04"))
-	}
-	live := "все истекли"
-	if n := s.ResetsAt(); !n.IsZero() {
-		live = "ближайшее живое через " + time.Until(n).Round(time.Minute).String()
-	}
-	return fmt.Sprintf("%s — %s", strings.Join(parts, ", "), live)
 }
 
 func orDash(s string) string {

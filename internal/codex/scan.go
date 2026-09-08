@@ -207,7 +207,7 @@ func ScanFile(path string) (Session, error) {
 	if ids := uuidRe.FindAllString(filepath.Base(path), -1); len(ids) > 0 {
 		s.ID = ids[len(ids)-1]
 		s.IDKey = "filename"
-		if len(ids) > 1 {
+		if len(ids) > 1 && ids[0] != s.ID {
 			s.ParentID = ids[0]
 		}
 	}
@@ -232,6 +232,12 @@ func ScanFile(path string) (Session, error) {
 }
 
 func (s *Session) applyRecord(v any) {
+	// Windows are collected per record and then replace what came before: a
+	// long rollout holds a snapshot from every turn, so accumulating them mixes
+	// windows that lapsed weeks ago with the current ones. Only the newest
+	// record in the file describes the limits as Codex last saw them.
+	var windows []Reset
+
 	walk(v, func(key string, val any) {
 		switch normKey(key) {
 		case "cwd", "workingdirectory", "workdir":
@@ -239,11 +245,14 @@ func (s *Session) applyRecord(v any) {
 				s.Cwd = normalizePath(str)
 			}
 		case "id", "sessionid", "threadid", "conversationid":
-			// A value recorded inside the file beats one guessed from its name.
-			if str, ok := val.(string); ok && uuidRe.MatchString(str) {
-				if s.IDKey == "" || s.IDKey == "filename" {
-					s.ID, s.IDKey = str, key
-				}
+			// The file name wins. An id recorded inside a rollout is not
+			// necessarily the rollout's own: transcripts reference other
+			// sessions — spawned agents, resumed threads — and taking the last
+			// one seen made three unrelated files claim one another's identity,
+			// with two of them colliding outright. An in-file id is used only
+			// when the name carries none.
+			if str, ok := val.(string); ok && uuidRe.MatchString(str) && s.ID == "" {
+				s.ID, s.IDKey = str, key
 			}
 		case "objective", "goaltext", "goalobjective":
 			if str, ok := val.(string); ok && str != "" {
@@ -275,17 +284,22 @@ func (s *Session) applyRecord(v any) {
 			}
 		case "resetsat", "resetat", "resetsatunix", "resettime":
 			if t, ok := parseTime(val); ok {
-				s.addReset(t, key)
+				windows = addReset(windows, t, key)
 			}
 		case "resetsinseconds", "resetafterseconds":
 			if secs, ok := toFloat(val); ok && secs > 0 {
 				// Relative offsets are anchored to now, not to file mtime: an
 				// anchor that is too early only makes crescent wait longer,
 				// while too late would make it hammer a still-closed window.
-				s.addReset(time.Now().Add(time.Duration(secs)*time.Second), key)
+				windows = addReset(windows, time.Now().Add(time.Duration(secs)*time.Second), key)
 			}
 		}
 	})
+
+	if len(windows) > 0 {
+		sort.Slice(windows, func(i, j int) bool { return windows[i].At.Before(windows[j].At) })
+		s.Resets = windows
+	}
 }
 
 // setObjective records the goal text and where it came from. walk visits a
@@ -299,15 +313,15 @@ func (s *Session) setObjective(text, key string) {
 	}
 }
 
-// addReset records a window, keeping the list free of duplicates: the same
-// snapshot is written to the rollout on every turn.
-func (s *Session) addReset(t time.Time, key string) {
-	for _, r := range s.Resets {
+// addReset appends a window unless the same instant is already present: one
+// record mentions each window more than once.
+func addReset(windows []Reset, t time.Time, key string) []Reset {
+	for _, r := range windows {
 		if r.At.Equal(t) {
-			return
+			return windows
 		}
 	}
-	s.Resets = append(s.Resets, Reset{At: t, Key: key})
+	return append(windows, Reset{At: t, Key: key})
 }
 
 // normalizePath turns what Codex records as a working directory into a path

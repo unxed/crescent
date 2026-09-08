@@ -223,16 +223,74 @@ func TestForkedRolloutsGetDistinctIDs(t *testing.T) {
 	}
 }
 
-func TestInFileIDBeatsFilename(t *testing.T) {
+// An id written inside a rollout is not necessarily that rollout's own: real
+// transcripts reference other sessions. Three unrelated files in a live
+// directory reported ids belonging to other rollouts, two of them colliding on
+// the same value. The file name wins.
+func TestForeignIDInsideFileIsIgnored(t *testing.T) {
 	dir := t.TempDir()
-	p := write(t, dir, "rollout-2026-09-08T01-00-48-01a07e1a-4cfb-7e60-a893-05507286e475.jsonl",
-		`{"type":"session_meta","id":"01a07e20-c01c-7f71-ac2f-744e11c1f1d8"}`)
+	p := write(t, dir, "rollout-2026-09-08T06-59-57-01a07f63-1d97-7a92-9ad5-03dd6eae045e.jsonl",
+		`{"type":"session_meta","session_id":"01a07e20-c01c-7f71-ac2f-744e11c1f1d8"}`)
+	s, _ := ScanFile(p)
+	if s.ID != "01a07f63-1d97-7a92-9ad5-03dd6eae045e" {
+		t.Errorf("ID = %q, want the uuid from the file name", s.ID)
+	}
+	if s.IDKey != "filename" {
+		t.Errorf("IDKey = %q, want filename", s.IDKey)
+	}
+}
+
+// Without a uuid in the name there is nothing better to go on.
+func TestInFileIDUsedWhenFilenameHasNone(t *testing.T) {
+	dir := t.TempDir()
+	p := write(t, dir, "rollout-plain.jsonl",
+		`{"type":"session_meta","session_id":"01a07e20-c01c-7f71-ac2f-744e11c1f1d8"}`)
 	s, _ := ScanFile(p)
 	if s.ID != "01a07e20-c01c-7f71-ac2f-744e11c1f1d8" {
-		t.Errorf("ID = %q, want the id recorded inside the file", s.ID)
+		t.Errorf("ID = %q", s.ID)
 	}
 	if s.IDKey == "filename" {
-		t.Error("IDKey still says filename")
+		t.Error("IDKey should name the JSON key it came from")
+	}
+}
+
+// A rollout whose parent is itself must not report a parent at all.
+func TestSelfParentIsNotReported(t *testing.T) {
+	dir := t.TempDir()
+	u := "01a0552d-0082-75b0-9a07-e6fa64943c5f"
+	p := write(t, dir, "rollout-2026-08-31T02-18-27-"+u+"_"+u+".jsonl", `{"type":"turn"}`)
+	s, _ := ScanFile(p)
+	if s.ParentID != "" {
+		t.Errorf("ParentID = %q, want empty when it equals the session id", s.ParentID)
+	}
+}
+
+// A long rollout carries a limits snapshot from every turn. Accumulating them
+// mixes windows that lapsed weeks ago into the current picture — one live file
+// reported seven, of which five were historical.
+func TestOnlyTheNewestSnapshotSurvives(t *testing.T) {
+	old1 := time.Now().Add(-300 * time.Hour).UTC().Format(time.RFC3339)
+	old2 := time.Now().Add(-200 * time.Hour).UTC().Format(time.RFC3339)
+	soon := time.Now().Add(3 * time.Hour).UTC().Format(time.RFC3339)
+	week := time.Now().Add(160 * time.Hour).UTC().Format(time.RFC3339)
+
+	dir := t.TempDir()
+	p := write(t, dir, "rollout-1.jsonl",
+		`{"rate_limits":{"primary":{"resets_at":"`+old1+`"},"secondary":{"resets_at":"`+old2+`"}}}`+"\n"+
+			`{"type":"turn"}`+"\n"+
+			`{"rate_limits":{"primary":{"resets_at":"`+soon+`"},"secondary":{"resets_at":"`+week+`"}}}`)
+
+	s, _ := ScanFile(p)
+	if len(s.Resets) != 2 {
+		t.Fatalf("kept %d windows, want only the 2 from the newest snapshot: %v", len(s.Resets), s.Resets)
+	}
+	for _, r := range s.Resets {
+		if r.At.Before(time.Now()) {
+			t.Errorf("a lapsed window survived: %v", r.At)
+		}
+	}
+	if !s.Resets[0].At.Before(s.Resets[1].At) {
+		t.Error("windows are not sorted")
 	}
 }
 
@@ -246,12 +304,12 @@ func TestBothLimitWindowsAreKeptAndNearestFutureWins(t *testing.T) {
 
 	dir := t.TempDir()
 	p := write(t, dir, "rollout-1.jsonl",
-		`{"rate_limits":{"secondary":{"resets_at":"`+late+`"},"primary":{"resets_at":"`+soon+`"}}}`+"\n"+
-			`{"rate_limits":{"primary":{"resets_at":"`+past+`"}}}`)
+		`{"rate_limits":{"primary":{"resets_at":"`+past+`"}}}`+"\n"+
+			`{"rate_limits":{"secondary":{"resets_at":"`+late+`"},"primary":{"resets_at":"`+soon+`"}}}`)
 
 	s, _ := ScanFile(p)
-	if len(s.Resets) != 3 {
-		t.Fatalf("kept %d windows, want 3", len(s.Resets))
+	if len(s.Resets) != 2 {
+		t.Fatalf("kept %d windows, want the 2 from the newest record", len(s.Resets))
 	}
 	got := s.ResetsAt()
 	if d := time.Until(got); d < 2*time.Hour || d > 4*time.Hour {
