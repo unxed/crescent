@@ -16,23 +16,17 @@ import (
 // GitHub page title as chat names. But the user can see the real name in the
 // app. Searching for that value and reporting where it lives turns the question
 // around, and does it without anyone having to hand over a transcript.
-func runFind(dir, needle string, deep bool) error {
-	where := "в той части файлов, которую читает сканер"
-	if deep {
-		where = "во всех файлах целиком (может быть долго)"
-	}
-	fmt.Printf("Ищу %q %s\n\n", needle, where)
+func runFind(root, needle string) error {
+	fmt.Printf("Ищу %q в %s\n\n", needle, root)
 
-	hits, err := codex.Find(dir, needle, deep, 200)
+	hits, err := codex.Find(root, needle, 200)
 	if err != nil {
 		return err
 	}
 	if len(hits) == 0 {
 		fmt.Println("Не найдено.")
-		if !deep {
-			fmt.Println("Попробуйте с -deep: значение может лежать в середине файла,")
-			fmt.Println("куда сканер не заглядывает.")
-		}
+		fmt.Println("С -deep поиск идёт по всему каталогу Codex, а не только по сессиям:")
+		fmt.Println("значение может храниться не в rollout-ах, а в собственных данных приложения.")
 		return nil
 	}
 
@@ -49,11 +43,7 @@ func runFind(dir, needle string, deep bool) error {
 	fmt.Printf("Найдено под %d ключами:\n", len(order))
 	for _, k := range order {
 		hs := byKey[k]
-		mark := ""
-		if !hs[0].InScan {
-			mark = "   ← вне области, которую читает сканер"
-		}
-		fmt.Printf("\n  %s   (совпадений: %d)%s\n", k, len(hs), mark)
+		fmt.Printf("\n  %s   (совпадений: %d)\n", k, len(hs))
 		fmt.Printf("      значение: %s\n", hs[0].Value)
 		fmt.Printf("      файл:     %s, строка %d\n", filepath.Base(hs[0].Path), hs[0].Line)
 	}

@@ -186,3 +186,17 @@ func asAmbiguous(err error, target *ErrAmbiguous) bool {
 	}
 	return false
 }
+
+// Explaining a symbol that does not appear in the output is noise.
+func TestLegendOnlyWhenSomethingIsMarked(t *testing.T) {
+	var withMark, without bytes.Buffer
+	WriteList(&withMark, goals(), func(s codex.Session) bool { return false })
+	WriteList(&without, goals(), func(s codex.Session) bool { return true })
+
+	if !strings.Contains(withMark.String(), "рабочий каталог не существует") {
+		t.Error("legend missing when entries are marked")
+	}
+	if strings.Contains(without.String(), "рабочий каталог не существует") {
+		t.Error("legend printed although nothing is marked")
+	}
+}

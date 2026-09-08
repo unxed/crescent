@@ -16,7 +16,6 @@ type Hit struct {
 	Line    int    // 1-based line number within the file
 	KeyPath string // dotted path to the key holding the value
 	Value   string // the value, truncated
-	InScan  bool   // whether it sits in the region the scanner actually reads
 }
 
 // Find locates a literal text inside rollout files and reports the key it lives
@@ -29,11 +28,10 @@ type Hit struct {
 // the honest way to learn the key is to search for the value and report where
 // it lives.
 //
-// deep controls how much of each file is read. Without it only the region the
-// scanner itself reads is searched, which answers "why does the scanner not see
-// this?". With it the whole file is streamed, which answers "is it in the file
-// at all?" and costs a full read of some very large rollouts.
-func Find(dir, needle string, deep bool, limit int) ([]Hit, error) {
+// Files are read end to end, and any file is searched, not only rollouts: the
+// value being hunted may well live in whatever store the desktop app keeps
+// beside them — the chat name shown in the app was not in a rollout at all.
+func Find(dir, needle string, limit int) ([]Hit, error) {
 	if strings.TrimSpace(needle) == "" {
 		return nil, fmt.Errorf("нечего искать")
 	}
@@ -41,13 +39,13 @@ func Find(dir, needle string, deep bool, limit int) ([]Hit, error) {
 
 	var hits []Hit
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(strings.ToLower(path), ".jsonl") {
+		if err != nil || d.IsDir() {
 			return nil
 		}
 		if len(hits) >= limit {
 			return filepath.SkipAll
 		}
-		found, ferr := findInFile(path, needleLow, deep, limit-len(hits))
+		found, ferr := findInFile(path, needleLow, limit-len(hits))
 		if ferr == nil {
 			hits = append(hits, found...)
 		}
@@ -60,12 +58,7 @@ func Find(dir, needle string, deep bool, limit int) ([]Hit, error) {
 	return hits, nil
 }
 
-func findInFile(path, needleLow string, deep bool, limit int) ([]Hit, error) {
-	scanRegion, err := scannedLineCount(path)
-	if err != nil {
-		return nil, err
-	}
-
+func findInFile(path, needleLow string, limit int) ([]Hit, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -73,7 +66,7 @@ func findInFile(path, needleLow string, deep bool, limit int) ([]Hit, error) {
 	defer f.Close()
 
 	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 1<<20), 64<<20)
+	sc.Buffer(make([]byte, 0, 256<<10), maxLine)
 
 	var hits []Hit
 	for line := 1; sc.Scan(); line++ {
@@ -87,9 +80,6 @@ func findInFile(path, needleLow string, deep bool, limit int) ([]Hit, error) {
 		if !strings.Contains(strings.ToLower(raw), needleLow) {
 			continue
 		}
-		if !deep && !scanRegion(line, int64(len(raw))) {
-			continue
-		}
 		var v any
 		if json.Unmarshal([]byte(raw), &v) != nil {
 			continue
@@ -101,28 +91,11 @@ func findInFile(path, needleLow string, deep bool, limit int) ([]Hit, error) {
 			}
 			hits = append(hits, Hit{
 				Path: path, Line: line, KeyPath: keyPath,
-				Value: clip(collapse(s), 90), InScan: scanRegion(line, int64(len(raw))),
+				Value: clip(collapse(s), 90),
 			})
 		})
 	}
 	return hits, sc.Err()
-}
-
-// scannedLineCount returns a predicate telling whether a line falls inside the
-// head or tail the scanner reads. Approximated by running byte offset, which is
-// what the scanner's own windows are based on.
-func scannedLineCount(path string) (func(line int, size int64) bool, error) {
-	fi, err := os.Stat(path)
-	if err != nil {
-		return nil, err
-	}
-	total := fi.Size()
-	var offset int64
-	return func(_ int, size int64) bool {
-		start := offset
-		offset += size + 1
-		return start < headTail || start > total-headTail
-	}, nil
 }
 
 // walkPath is walk with the dotted key path carried along, so a hit can say

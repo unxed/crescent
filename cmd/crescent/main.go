@@ -45,7 +45,8 @@ func main() {
 	yes := flag.Bool("yes", false, "with -run-once: take the offered goal without asking")
 	gui := flag.Bool("gui", false, "open the window (it is still a viewer: nothing can be started from it)")
 	find := flag.String("find", "", "find which JSON key holds this text (e.g. a chat name you can see in the app)")
-	deep := flag.Bool("deep", false, "with -find: read whole rollout files, not just the part the scanner reads")
+	deep := flag.Bool("deep", false, "with -find: search the whole Codex directory, not only sessions")
+	refresh := flag.Bool("refresh", false, "forget the scan cache and read every rollout again")
 	flag.Parse()
 
 	// Go's flag package stops parsing at the first positional argument, so
@@ -84,10 +85,25 @@ func main() {
 		return
 	}
 
-	sessions, scanErr := codex.Scan(dir)
+	sessions, scanErr := codex.ScanWithProgress(dir, scanProgress())
+	finishProgress()
+
+	if *refresh {
+		if err := codex.DropCache(); err != nil && !os.IsNotExist(err) {
+			fmt.Fprintln(os.Stderr, "не удалось сбросить кэш:", err)
+		} else {
+			fmt.Println("Кэш сброшен, следующий запуск прочитает все файлы заново.")
+		}
+	}
 
 	if *find != "" {
-		if err := runFind(dir, *find, *deep); err != nil {
+		root := dir
+		if *deep {
+			if h, err := codex.Home(); err == nil {
+				root = h
+			}
+		}
+		if err := runFind(root, *find); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}

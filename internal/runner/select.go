@@ -116,14 +116,18 @@ func WriteList(w io.Writer, goals []codex.Session, runnable func(codex.Session) 
 		fmt.Fprintln(w, "Целей не найдено.")
 		return
 	}
+	marked := false
 	for i, g := range goals {
 		mark := "  "
 		if runnable != nil && !runnable(g) {
 			mark = "✗ " // workspace gone
+			marked = true
 		}
 		fmt.Fprintf(w, "%s%2d. %-9s %-9s %s\n", mark, i+1, ShortID(g.ID), g.Status, g.Label())
 	}
-	if runnable != nil {
+	// The legend is printed only when something actually carries the mark;
+	// explaining a symbol that does not appear is noise.
+	if marked {
 		fmt.Fprintln(w, "\n✗ — рабочий каталог не существует, продолжать нечего")
 	}
 }

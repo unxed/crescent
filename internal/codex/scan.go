@@ -13,9 +13,9 @@
 package codex
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -101,7 +101,10 @@ type Session struct {
 	ObjectiveKey string
 	IDKey        string
 	NameKey      string
-	nameRank     int
+
+	// NameRank is exported only so the cache can round-trip it; it is not part
+	// of the API anyone should read.
+	NameRank int `json:"nameRank,omitempty"`
 }
 
 // ResetsAt returns the nearest reset still in the future, or the zero time if
@@ -177,7 +180,10 @@ func collapse(s string) string {
 // Scan walks the sessions directory and summarises every rollout file.
 // Files that cannot be read or parsed are skipped, never fatal: one corrupt
 // rollout must not hide the rest.
-func Scan(dir string) ([]Session, error) {
+func Scan(dir string) ([]Session, error) { return ScanWithProgress(dir, nil) }
+
+// ScanWithProgress is Scan with a callback for the first, slow sweep.
+func ScanWithProgress(dir string, report Progress) ([]Session, error) {
 	info, err := os.Stat(dir)
 	if err != nil {
 		return nil, err
@@ -186,72 +192,71 @@ func Scan(dir string) ([]Session, error) {
 		return nil, errors.New("codex: sessions path is not a directory: " + dir)
 	}
 
-	var out []Session
+	var files []string
 	err = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil // unreadable subtree: skip, keep going
 		}
-		if d.IsDir() || !strings.HasSuffix(strings.ToLower(path), ".jsonl") {
-			return nil
+		if !d.IsDir() && strings.HasSuffix(strings.ToLower(path), ".jsonl") {
+			files = append(files, path)
 		}
-		fi, err := d.Info()
-		if err != nil {
-			return nil
-		}
-		s, err := ScanFile(path)
-		if err != nil {
-			return nil
-		}
-		s.Modified, s.Size = fi.ModTime(), fi.Size()
-		out = append(out, s)
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
+
+	c := loadCache()
+	defer c.save()
+
+	out := make([]Session, 0, len(files))
+	for i, path := range files {
+		fi, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		s, ok := c.get(path, fi)
+		if !ok {
+			if report != nil {
+				report(i, len(files), path)
+			}
+			s, err = ScanFile(path)
+			if err != nil {
+				continue
+			}
+			c.put(path, fi, s)
+		}
+		s.Path = path
+		s.Modified, s.Size = fi.ModTime(), fi.Size()
+		out = append(out, s)
+	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Modified.After(out[j].Modified) })
 	return out, nil
 }
-
-// headTail bounds how much of a rollout is read. Sessions can reach hundreds of
-// megabytes; identity lives at the top and current state at the bottom, so the
-// middle is never worth the I/O.
-const headTail = 256 << 10
 
 var uuidRe = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
 
 // ScanFile summarises a single rollout file.
 func ScanFile(path string) (Session, error) {
-	s := Session{Path: path}
-	// Rollout names look like rollout-<ts>-<uuid>.jsonl or, for a session
-	// continued from another thread, rollout-<ts>-<parent>_<own>.jsonl. Taking
-	// the first UUID reports the parent, which makes distinct files collide on
-	// one id — visible in the wild as two rollouts claiming the same session.
-	if ids := uuidRe.FindAllString(filepath.Base(path), -1); len(ids) > 0 {
-		s.ID = ids[len(ids)-1]
-		s.IDKey = "filename"
-		if len(ids) > 1 && ids[0] != s.ID {
-			s.ParentID = ids[0]
-		}
-	}
+	return scanWhole(path)
+}
 
-	head, tail, err := readEnds(path, headTail)
-	if err != nil {
-		return s, err
+// applyFilename derives identity from the rollout's name.
+//
+// Rollout names look like rollout-<ts>-<uuid>.jsonl or, for a session continued
+// from another thread, rollout-<ts>-<parent>_<own>.jsonl. Taking the first UUID
+// reports the parent, which makes distinct files collide on one id — visible in
+// the wild as two rollouts claiming the same session.
+func (s *Session) applyFilename() {
+	ids := uuidRe.FindAllString(filepath.Base(s.Path), -1)
+	if len(ids) == 0 {
+		return
 	}
-
-	// The head carries identity, the tail carries current state; later records
-	// win, so the head is applied first and then overwritten by the tail.
-	for _, chunk := range [][]byte{head, tail} {
-		for _, line := range splitLines(chunk) {
-			var v any
-			if json.Unmarshal(line, &v) != nil {
-				continue // truncated first/last line of a chunk, or not JSON
-			}
-			s.applyRecord(v)
-		}
+	s.ID = ids[len(ids)-1]
+	s.IDKey = "filename"
+	if len(ids) > 1 && ids[0] != s.ID {
+		s.ParentID = ids[0]
 	}
-	return s, nil
 }
 
 func (s *Session) applyRecord(v any) {
@@ -347,10 +352,10 @@ func (s *Session) setName(val any, key string, rank int) {
 	if text == "" || len([]rune(text)) > 120 || strings.ContainsAny(text, "\n\r") {
 		return
 	}
-	if rank < s.nameRank {
+	if rank < s.NameRank {
 		return
 	}
-	s.Name, s.NameKey, s.nameRank = text, key, rank
+	s.Name, s.NameKey, s.NameRank = text, key, rank
 }
 
 // setObjective records the goal text and where it came from. walk visits a
@@ -423,19 +428,22 @@ func walk(v any, fn func(key string, val any)) {
 // occurred. Values are never collected — this is what makes it safe to paste a
 // -dump report into a bug report.
 func Keys(path string) (map[string]int, error) {
-	head, tail, err := readEnds(path, headTail)
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
+	defer f.Close()
+
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 256<<10), maxLine)
+
 	keys := map[string]int{}
-	for _, chunk := range [][]byte{head, tail} {
-		for _, line := range splitLines(chunk) {
-			var v any
-			if json.Unmarshal(line, &v) != nil {
-				continue
-			}
-			walk(v, func(k string, _ any) { keys[k]++ })
+	for sc.Scan() {
+		var v any
+		if json.Unmarshal(sc.Bytes(), &v) != nil {
+			continue
 		}
+		walk(v, func(k string, _ any) { keys[k]++ })
 	}
 	return keys, nil
 }
@@ -488,46 +496,6 @@ func epochToTime(n float64) time.Time {
 	default:
 		return time.Unix(int64(n), 0)
 	}
-}
-
-func splitLines(b []byte) [][]byte {
-	var out [][]byte
-	for _, l := range strings.Split(string(b), "\n") {
-		l = strings.TrimSpace(l)
-		if l != "" {
-			out = append(out, []byte(l))
-		}
-	}
-	return out
-}
-
-// readEnds returns up to n bytes from the start and n bytes from the end.
-func readEnds(path string, n int64) (head, tail []byte, err error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer f.Close()
-
-	fi, err := f.Stat()
-	if err != nil {
-		return nil, nil, err
-	}
-	size := fi.Size()
-
-	if size <= n {
-		b, err := io.ReadAll(f)
-		return b, nil, err
-	}
-	head = make([]byte, n)
-	if _, err := io.ReadFull(f, head); err != nil {
-		return nil, nil, err
-	}
-	tail = make([]byte, n)
-	if _, err := f.ReadAt(tail, size-n); err != nil && err != io.EOF {
-		return head, nil, err
-	}
-	return head, tail, nil
 }
 
 // AccountLimits reports the usage-limit windows that are actually in force.
