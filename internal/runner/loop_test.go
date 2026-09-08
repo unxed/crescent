@@ -5,9 +5,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/unxed/crescent/internal/codex"
 )
 
 func loopEnv(t *testing.T, rollouts map[string]string, stream string, exit int) (*Loop, string) {
@@ -210,4 +213,91 @@ func TestStatusOfADeadProcessIsReportedAsStopped(t *testing.T) {
 	if got.State != StateStopped {
 		t.Errorf("state = %q, want stopped for a vanished process", got.State)
 	}
+}
+
+// The whole point of the thing is a pool: every goal advances a step, in turn,
+// so that one long task cannot take the entire window while the rest sit idle
+// until the quota runs out. Driving runnable[0] every time broke exactly that —
+// and each turn made that goal the freshest again, so the choice reinforced
+// itself.
+func TestEveryGoalGetsATurn(t *testing.T) {
+	l, _ := loopEnv(t, threeGoals(t), `{"type":"turn.completed"}`, 0)
+	l.ReadOnlyProbe = false
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = l.Run(ctx); close(done) }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && len(l.driven()) < 3 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	got := l.driven()
+	if len(got) != 3 {
+		t.Fatalf("прогнано целей: %d, а должны быть все три: %v", len(got), got)
+	}
+}
+
+// With MaxTurns above one, a goal keeps the floor for that many turns and then
+// hands it on — a step at a time, not a monopoly and not a thrash.
+func TestGoalKeepsTheFloorForMaxTurns(t *testing.T) {
+	l, _ := loopEnv(t, threeGoals(t), `{"type":"turn.completed"}`, 0)
+	l.Policy.MaxTurns = 2
+
+	runnable := []Step{
+		{Session: codex.Session{ID: "a"}},
+		{Session: codex.Session{ID: "b"}},
+		{Session: codex.Session{ID: "c"}},
+	}
+	var order []string
+	for i := 0; i < 6; i++ {
+		order = append(order, l.pick(runnable, l.Policy.MaxTurns).ID)
+	}
+	want := "a a b b c c"
+	if got := strings.Join(order, " "); got != want {
+		t.Errorf("порядок = %q, ожидался %q", got, want)
+	}
+}
+
+// A goal that leaves the queue — unchecked, finished, workspace gone — must not
+// strand the cursor.
+func TestCursorRecoversWhenTheCurrentGoalLeaves(t *testing.T) {
+	l, _ := loopEnv(t, threeGoals(t), `{"type":"turn.completed"}`, 0)
+
+	full := []Step{{Session: codex.Session{ID: "a"}}, {Session: codex.Session{ID: "b"}}}
+	if got := l.pick(full, 1).ID; got != "a" {
+		t.Fatalf("first pick = %s", got)
+	}
+	shrunk := []Step{{Session: codex.Session{ID: "b"}}}
+	if got := l.pick(shrunk, 1).ID; got != "b" {
+		t.Errorf("pick = %s, а очередь осталась только с b", got)
+	}
+}
+
+// driven reports the distinct goals the loop has actually run.
+func (l *Loop) driven() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]string, 0, len(l.own))
+	for id := range l.own {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func threeGoals(t *testing.T) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	for _, id := range []string{
+		"01a04f59-3ac3-7790-9f25-a0bd6c10ca2b",
+		"01a08170-c01c-7f71-ac2f-744e11c1f1d8",
+		"01a077b3-6ac6-76d3-b9f4-d5edc26d6c31",
+	} {
+		out["rollout-"+id+".jsonl"] = strings.Replace(oneGoal, "CWD", jsonPath(t.TempDir()), 1)
+	}
+	return out
 }

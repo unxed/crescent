@@ -36,6 +36,11 @@ type Loop struct {
 	// own remembers the turns crescent itself drove, so the yield check does
 	// not read them as somebody else at the keyboard.
 	own OwnWrites
+
+	// current is the goal being advanced, and streak how many turns in a row it
+	// has had. Together they make the queue a rotation instead of a spotlight.
+	currentID string
+	streak    int
 }
 
 // NewLoop prepares a daemon with sensible defaults.
@@ -189,7 +194,7 @@ func (l *Loop) step(ctx context.Context) time.Duration {
 		return l.Tick
 	}
 
-	goal := runnable[0].Session
+	goal := l.pick(runnable, pol.MaxTurns)
 	l.setState(StateRunning, "", time.Time{}, &goal)
 
 	res, err := RunOnce(ctx, pol, goal, Options{Trace: l.Log, Timeout: 60 * time.Minute})
@@ -236,6 +241,45 @@ func (l *Loop) step(ctx context.Context) time.Duration {
 	// Straight on to the next examination: goals move one turn at a time, and
 	// the freshest one is picked again from a rescan rather than assumed.
 	return 0
+}
+
+// pick chooses which goal gets this turn.
+//
+// The point of the whole thing is a pool: every goal is supposed to advance,
+// one step at a time, so that a long task cannot monopolise the window and the
+// others sit untouched until the quota runs out. So after MaxTurns consecutive
+// turns the queue moves on, wrapping around the list.
+//
+// Taking runnable[0] every time — which is what this did — meant the freshest
+// goal took every turn and nothing else ever ran. Worse, each turn makes that
+// goal the freshest again, so the choice was self-reinforcing.
+func (l *Loop) pick(runnable []Step, maxTurns int) codex.Session {
+	if maxTurns < 1 {
+		maxTurns = 1
+	}
+
+	at := -1
+	for i, st := range runnable {
+		if st.Session.ID == l.currentID {
+			at = i
+			break
+		}
+	}
+
+	switch {
+	case at < 0:
+		// The goal we were on is gone from the queue — unchecked, finished, or
+		// its workspace vanished. Start from the top.
+		l.currentID, l.streak = runnable[0].Session.ID, 1
+		return runnable[0].Session
+	case l.streak < maxTurns:
+		l.streak++
+		return runnable[at].Session
+	default:
+		next := runnable[(at+1)%len(runnable)]
+		l.currentID, l.streak = next.Session.ID, 1
+		return next.Session
+	}
 }
 
 // probe runs a single read-only turn to prove the machinery works.
