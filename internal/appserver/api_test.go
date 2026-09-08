@@ -143,3 +143,19 @@ func TestThreadListDecodesTheRealShape(t *testing.T) {
 		t.Errorf("Cwd = %q", th.Cwd)
 	}
 }
+
+// The statuses below were reported by a live server. usageLimited is the state
+// crescent exists to undo, so it must be restartable; a finished or blocked
+// goal must not be.
+func TestRestartableStatuses(t *testing.T) {
+	for _, s := range []string{StatusUsageLimited, StatusPaused, StatusActive, "somethingNew"} {
+		if !Restartable(s) {
+			t.Errorf("%q должен перезапускаться", s)
+		}
+	}
+	for _, s := range []string{StatusComplete, StatusBlocked, "Completed", "cancelled"} {
+		if Restartable(s) {
+			t.Errorf("%q перезапускать нельзя", s)
+		}
+	}
+}

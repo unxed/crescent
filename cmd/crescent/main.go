@@ -23,12 +23,25 @@ func main() {
 	codexPath := flag.String("codex", "", "путь к codex (иначе ищется автоматически)")
 	verbose := flag.Bool("v", false, "показывать диагностику app-server")
 	raw := flag.Bool("raw", false, "печатать сырые ответы сервера")
+	restart := flag.Bool("restart", false, "перезапустить остановленные цели, если лимит позволяет")
+	dry := flag.Bool("dry-run", false, "с -restart: показать, что было бы сделано, и не делать")
+	prompt := flag.String("prompt", "Продолжай работу над текущей целью.", "чем будить цель")
 	flag.Parse()
+
+	if *restart {
+		if err := runRestart(*codexPath, *dry, *prompt, *verbose); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if !*doctor {
 		fmt.Println("crescent — перезапуск целей Codex после сброса лимитов")
 		fmt.Println()
-		fmt.Println("  crescent -doctor    спросить app-server о лимитах и целях")
+		fmt.Println("  crescent -doctor              спросить app-server о лимитах и целях")
+		fmt.Println("  crescent -restart -dry-run    показать, что было бы перезапущено")
+		fmt.Println("  crescent -restart             перезапустить остановленные цели")
 		fmt.Println()
 		fmt.Println("Прежняя, файловая реализация сохранена: go run ./archive/cmd/crescent -run")
 		return
@@ -185,4 +198,90 @@ func short(s string, n int) string {
 		return string(r)
 	}
 	return string(r[:n-1]) + "…"
+}
+
+// runRestart is the product in its smallest honest form: if the account may
+// work, push every stopped goal forward by one turn.
+func runRestart(codexPath string, dry bool, prompt string, verbose bool) error {
+	client, path, err := connect(codexPath, verbose)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	fmt.Println("codex:", path)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	limits, err := client.RateLimitsWithRetry(ctx, 3)
+	if err != nil {
+		// Unknown is not permission. Refusing to act on an unread limit is the
+		// difference between a careful tool and one that hammers a closed door.
+		return fmt.Errorf("состояние лимитов не выяснено, ничего не запускаю: %w", err)
+	}
+	if limited, at := limits.Exhausted(); limited {
+		if at.IsZero() {
+			fmt.Println("Лимит исчерпан, время сброса сервер не назвал — ждём.")
+		} else {
+			fmt.Printf("Лимит исчерпан, сброс в %s (через %s) — ждём.\n",
+				at.Local().Format("15:04"), time.Until(at).Round(time.Minute))
+		}
+		return nil
+	}
+	fmt.Println("Лимит позволяет работать.")
+
+	candidates, err := client.Candidates(ctx)
+	if err != nil {
+		return err
+	}
+	if len(candidates) == 0 {
+		fmt.Println("Остановленных целей нет.")
+		return nil
+	}
+
+	// Only taking a turn needs sole ownership of a thread; reading did not.
+	if running, name := codexcli.AppRunning(); running && !dry {
+		return fmt.Errorf("запущено приложение %s — закройте его: владелец сессии может быть только один", name)
+	}
+
+	fmt.Printf("\nЦелей к перезапуску: %d\n", len(candidates))
+	for _, c := range candidates {
+		fmt.Printf("\n • %s  [%s]\n   %s\n",
+			orDash(c.Thread.Label()), orDash(c.Goal.Status), short(c.Goal.Objective, 80))
+		if dry {
+			continue
+		}
+		if err := client.Restart(ctx, c.Thread.ID, prompt); err != nil {
+			fmt.Printf("   не удалось: %v\n", err)
+			continue
+		}
+		fmt.Println("   запущено")
+	}
+	if dry {
+		fmt.Println("\n(-dry-run: ничего не запускалось)")
+	}
+	return nil
+}
+
+// connect starts an app-server and completes the handshake.
+func connect(codexPath string, verbose bool) (*appserver.Client, string, error) {
+	if codexPath != "" {
+		os.Setenv(codexcli.EnvCodex, codexPath)
+	}
+	path, tried := codexcli.FindCodex()
+	if path == "" {
+		return nil, "", fmt.Errorf("codex не найден; искал в %d местах, укажите путь через -codex", len(tried))
+	}
+	var stderr *os.File
+	if verbose {
+		stderr = os.Stderr
+	}
+	client, err := appserver.Dial(context.Background(), appserver.Options{
+		CodexPath: path,
+		Stderr:    stderr,
+	})
+	if err != nil {
+		return nil, path, fmt.Errorf("не удалось поговорить с app-server: %w", err)
+	}
+	return client, path, nil
 }
