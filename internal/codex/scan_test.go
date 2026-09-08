@@ -384,3 +384,71 @@ func TestObjectiveProvenanceIsRecorded(t *testing.T) {
 		t.Errorf("ObjectiveKey = %q, want goal.objective", s.ObjectiveKey)
 	}
 }
+
+// The conversation's own title is far more recognisable than the first sentence
+// of the prompt, so it leads the label.
+func TestConversationTitleIsPickedUp(t *testing.T) {
+	dir := t.TempDir()
+	p := write(t, dir, "rollout-1.jsonl",
+		`{"type":"session_meta","title":"Лунобот-2: статус тикетов"}`+"\n"+
+			`{"type":"goal","goal":{"objective":"Проект Лунобот-2. Следуй приложенной инструкции.","status":"active"}}`)
+
+	s, _ := ScanFile(p)
+	if s.Name != "Лунобот-2: статус тикетов" {
+		t.Errorf("Name = %q", s.Name)
+	}
+	if got := s.Label(); !strings.HasPrefix(got, "Лунобот-2: статус тикетов — Проект Лунобот-2") {
+		t.Errorf("Label = %q, want the title first", got)
+	}
+}
+
+// `name` shows up on tools, items and files inside a transcript; a qualified key
+// must win regardless of which was seen last.
+func TestQualifiedTitleKeyBeatsGenericOne(t *testing.T) {
+	dir := t.TempDir()
+	p := write(t, dir, "rollout-1.jsonl",
+		`{"type":"thread","conversation_title":"Починка CI"}`+"\n"+
+			`{"type":"item","tool":{"name":"shell"}}`+"\n"+
+			`{"type":"item","name":"apply_patch"}`)
+
+	s, _ := ScanFile(p)
+	if s.Name != "Починка CI" {
+		t.Errorf("Name = %q, want the conversation title, not a tool name", s.Name)
+	}
+	if s.NameKey != "conversation_title" {
+		t.Errorf("NameKey = %q", s.NameKey)
+	}
+}
+
+// Prose that happens to sit under a generic key is not a title.
+func TestLongOrMultilineTextIsNotATitle(t *testing.T) {
+	dir := t.TempDir()
+	long := strings.Repeat("очень длинный текст ", 20)
+	p := write(t, dir, "rollout-1.jsonl",
+		`{"name":"`+long+`"}`+"\n"+`{"summary":"первая строка\nвторая строка"}`)
+
+	s, _ := ScanFile(p)
+	if s.Name != "" {
+		t.Errorf("Name = %q, want empty", s.Name)
+	}
+}
+
+// Within one rank the newest record wins: the app renames a chat once it has
+// seen a few turns.
+func TestLaterTitleWinsWithinTheSameRank(t *testing.T) {
+	dir := t.TempDir()
+	p := write(t, dir, "rollout-1.jsonl",
+		`{"title":"Новый чат"}`+"\n"+`{"title":"Починка ConPTY"}`)
+
+	s, _ := ScanFile(p)
+	if s.Name != "Починка ConPTY" {
+		t.Errorf("Name = %q, want the later title", s.Name)
+	}
+}
+
+func TestLabelFallsBackToTheGoalText(t *testing.T) {
+	s := Session{Objective: "Дождись окончания прогона CI"}
+	if got := s.Label(); got != "Дождись окончания прогона CI" {
+		t.Errorf("Label = %q", got)
+	}
+}

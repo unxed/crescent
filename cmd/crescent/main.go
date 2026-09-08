@@ -42,6 +42,8 @@ func main() {
 	readOnly := flag.Bool("read-only", false, "with -run-once: force --sandbox read-only (recommended for the first run)")
 	rawTo := flag.String("raw", "", "with -run-once: write the raw --json stream to this file")
 	prompt := flag.String("prompt", "", "message used to wake the session")
+	yes := flag.Bool("yes", false, "with -run-once: take the offered goal without asking")
+	gui := flag.Bool("gui", false, "open the window (it is still a viewer: nothing can be started from it)")
 	flag.Parse()
 
 	// Go's flag package stops parsing at the first positional argument, so
@@ -82,6 +84,18 @@ func main() {
 
 	sessions, scanErr := codex.Scan(dir)
 
+	if *gui {
+		if scanErr != nil {
+			fmt.Fprintln(os.Stderr, "не удалось прочитать", dir+":", scanErr)
+			os.Exit(1)
+		}
+		if err := runGUI(dir, sessions); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if *list || *runOnce {
 		if scanErr != nil {
 			fmt.Fprintln(os.Stderr, "не удалось прочитать", dir+":", scanErr)
@@ -92,7 +106,7 @@ func main() {
 			runner.WriteList(os.Stdout, goals, workspaceLive)
 			return
 		}
-		if err := doRunOnce(goals, selector, *readOnly, *rawTo, *prompt); err != nil {
+		if err := doRunOnce(goals, selector, *readOnly, *yes, *rawTo, *prompt); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -111,15 +125,22 @@ func main() {
 		runDump(dir, sessions, scanErr, *keys)
 		return
 	}
+	// Bare invocation used to open the window, which only shows what was found
+	// and cannot start anything — leaving the obvious next step invisible.
 	if scanErr != nil {
 		fmt.Fprintf(os.Stderr, "не удалось прочитать %s: %v\n", dir, scanErr)
-		fmt.Fprintln(os.Stderr, "запустите `crescent -dump` для диагностики")
+		fmt.Fprintln(os.Stderr, "запустите `crescent -doctor` для диагностики")
 		os.Exit(1)
 	}
-	if err := runGUI(dir, sessions); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+	goals := runner.Goals(sessions)
+	runner.WriteList(os.Stdout, goals, workspaceLive)
+	fmt.Println()
+	if _, ok := runner.Default(goals, workspaceLive); ok {
+		fmt.Println("Продолжить цель на один ход:")
+		fmt.Println("    crescent -run-once -read-only      предложит подходящую, Enter соглашается")
+		fmt.Println("    crescent -run-once -read-only 2    сразу нужную")
 	}
+	fmt.Println("Ещё:  -plan (очередь)   -doctor (окружение)   -dump (подробно)   -gui (окно)")
 }
 
 // runDump is the feedback loop for the one thing that cannot be verified
@@ -178,7 +199,7 @@ func runDump(dir string, sessions []codex.Session, scanErr error, withKeys bool)
 			skipped++
 			continue
 		}
-		fmt.Printf("\n• %s\n", s.Title())
+		fmt.Printf("\n• %s\n", s.Label())
 		fmt.Printf("    %s  •  %s  •  изменён %s\n",
 			orDash(string(s.Status)), orDash(s.Cwd), s.Modified.Format("2006-01-02 15:04"))
 		fmt.Printf("    id %s", orDash(s.ID))
@@ -186,6 +207,10 @@ func runDump(dir string, sessions []codex.Session, scanErr error, withKeys bool)
 			fmt.Printf(", продолжает %s", s.ParentID)
 		}
 		fmt.Printf("  [%s]\n", orDash(s.IDKey))
+		if s.ObjectiveKey != "" || s.NameKey != "" {
+			fmt.Printf("    цель из поля %q, имя чата из %q\n",
+				orDash(s.ObjectiveKey), orDash(s.NameKey))
+		}
 		fmt.Printf("    %s\n", filepath.Base(s.Path))
 	}
 	fmt.Printf("\nБез цели пропущено: %d\n", skipped)
@@ -287,7 +312,7 @@ func runDoctor(dir string) {
 			} else {
 				gone++
 			}
-			fmt.Printf("    %s  %-46s  %s\n", mark, truncate(orDash(s.Cwd), 46), s.Title())
+			fmt.Printf("    %s  %-46s  %s\n", mark, truncate(orDash(s.Cwd), 46), s.Label())
 		}
 		fmt.Printf("    итого: %d живых, %d исчезло\n", live, gone)
 	}
@@ -335,7 +360,7 @@ func runPlan(sessions []codex.Session) {
 			continue
 		}
 		n++
-		fmt.Printf("\n%d. %s\n", n, st.Session.Title())
+		fmt.Printf("\n%d. %s\n", n, st.Session.Label())
 		fmt.Printf("   %s\n", shellLine(pol.CodexPath, st.Args))
 	}
 	if n == 0 {
@@ -349,7 +374,7 @@ func runPlan(sessions []codex.Session) {
 			continue
 		}
 		skipped++
-		fmt.Printf("   %s — %s\n", st.Session.Title(), st.Skip)
+		fmt.Printf("   %s — %s\n", st.Session.Label(), st.Skip)
 	}
 	if skipped == 0 {
 		fmt.Println("   ничего")
@@ -359,7 +384,7 @@ func runPlan(sessions []codex.Session) {
 // doRunOnce resumes one named session for a single turn and reports what
 // happened. It is deliberately a separate mode from the queue: before anything
 // runs unattended, one turn should be watched by a human.
-func doRunOnce(goals []codex.Session, selector string, readOnly bool, rawPath, prompt string) error {
+func doRunOnce(goals []codex.Session, selector string, readOnly, yes bool, rawPath, prompt string) error {
 	if len(goals) == 0 {
 		return fmt.Errorf("целей не найдено; проверьте crescent -dump")
 	}
@@ -368,10 +393,17 @@ func doRunOnce(goals []codex.Session, selector string, readOnly bool, rawPath, p
 	// hand is not a user interface.
 	var target codex.Session
 	var err error
-	if strings.TrimSpace(selector) == "" {
-		target, err = runner.Pick(os.Stdin, os.Stdout, goals, workspaceLive)
-	} else {
+	switch {
+	case strings.TrimSpace(selector) != "":
 		target, err = runner.Resolve(goals, selector)
+	case yes:
+		var ok bool
+		target, ok = runner.Default(goals, workspaceLive)
+		if !ok {
+			err = fmt.Errorf("нет ни одной цели, которую можно продолжить")
+		}
+	default:
+		target, err = runner.Pick(os.Stdin, os.Stdout, goals, workspaceLive)
 	}
 	if err != nil {
 		return err
@@ -398,10 +430,10 @@ func doRunOnce(goals []codex.Session, selector string, readOnly bool, rawPath, p
 
 	if !workspaceLive(target) {
 		return fmt.Errorf("у цели %q рабочий каталог %s не существует — продолжать нечего",
-			target.Title(), target.Cwd)
+			target.Label(), target.Cwd)
 	}
 
-	fmt.Printf("Цель:    %s\n", target.Title())
+	fmt.Printf("Цель:    %s\n", target.Label())
 	fmt.Printf("id:      %s\n", target.ID)
 	fmt.Printf("Каталог: %s\n", target.Cwd)
 	if readOnly {
@@ -515,7 +547,7 @@ func runGUI(dir string, sessions []codex.Session) error {
 
 	boxes := make([]*goWidgets.CheckBox, 0, len(goals))
 	for _, g := range goals {
-		label := g.Title()
+		label := g.Label()
 		box, err := win.AddCheckBox(label, true)
 		if err != nil {
 			return err

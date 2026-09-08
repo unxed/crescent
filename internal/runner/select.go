@@ -40,7 +40,7 @@ func (e ErrAmbiguous) Error() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%q подходит сразу нескольким целям:\n", e.Selector)
 	for _, m := range e.Matches {
-		fmt.Fprintf(&b, "    %s  %s\n", ShortID(m.ID), m.Title())
+		fmt.Fprintf(&b, "    %s  %s\n", ShortID(m.ID), m.Label())
 	}
 	b.WriteString("уточните номер или более длинный кусок id")
 	return b.String()
@@ -108,34 +108,72 @@ func Resolve(goals []codex.Session, selector string) (codex.Session, error) {
 	}
 }
 
-// WriteList prints the numbered chooser. workspaceLive reports whether a
-// session's working directory still exists — many were created under /tmp and
+// WriteList prints the numbered chooser. runnable reports whether a session can
+// actually be continued — many working directories were created under /tmp and
 // did not survive a reboot, and picking one of those only wastes a turn.
-func WriteList(w io.Writer, goals []codex.Session, workspaceLive func(codex.Session) bool) {
+func WriteList(w io.Writer, goals []codex.Session, runnable func(codex.Session) bool) {
 	if len(goals) == 0 {
 		fmt.Fprintln(w, "Целей не найдено.")
 		return
 	}
 	for i, g := range goals {
 		mark := "  "
-		if workspaceLive != nil && !workspaceLive(g) {
+		if runnable != nil && !runnable(g) {
 			mark = "✗ " // workspace gone
 		}
-		fmt.Fprintf(w, "%s%2d. %-9s %-9s %s\n", mark, i+1, ShortID(g.ID), g.Status, g.Title())
+		fmt.Fprintf(w, "%s%2d. %-9s %-9s %s\n", mark, i+1, ShortID(g.ID), g.Status, g.Label())
 	}
-	if workspaceLive != nil {
+	if runnable != nil {
 		fmt.Fprintln(w, "\n✗ — рабочий каталог не существует, продолжать нечего")
 	}
 }
 
-// Pick shows the list and reads a choice. An empty answer cancels.
-func Pick(in io.Reader, out io.Writer, goals []codex.Session, workspaceLive func(codex.Session) bool) (codex.Session, error) {
-	WriteList(out, goals, workspaceLive)
-	fmt.Fprintf(out, "\nКакую цель продолжить? [1-%d, Enter — отмена]: ", len(goals))
+// Default is the goal to offer without being asked: the freshest one that can
+// actually be continued. After you stop a goal in the app to work on it, that
+// goal is the most recently written, so this is nearly always the intended one.
+func Default(goals []codex.Session, runnable func(codex.Session) bool) (codex.Session, bool) {
+	for _, g := range goals {
+		if !g.Status.Resumable() {
+			continue
+		}
+		if runnable != nil && !runnable(g) {
+			continue
+		}
+		return g, true
+	}
+	return codex.Session{}, false
+}
+
+// Pick shows the list with the default already chosen, so the whole interaction
+// is one keystroke. Nothing has to be memorised and nothing has to be typed:
+// Enter accepts, a number overrides, q cancels.
+func Pick(in io.Reader, out io.Writer, goals []codex.Session, runnable func(codex.Session) bool) (codex.Session, error) {
+	def, hasDef := Default(goals, runnable)
+
+	WriteList(out, goals, runnable)
+	if !hasDef {
+		return codex.Session{}, fmt.Errorf("нет ни одной цели, которую можно продолжить")
+	}
+
+	defNum := 0
+	for i, g := range goals {
+		if g.ID == def.ID {
+			defNum = i + 1
+		}
+	}
+	fmt.Fprintf(out, "\nПродолжить цель %d (%s)? [Enter — да, номер — другая, q — отмена]: ",
+		defNum, oneLine(def.Label(), 46))
 
 	line, err := bufio.NewReader(in).ReadString('\n')
-	if err != nil && line == "" {
-		return codex.Session{}, fmt.Errorf("выбор не прочитан (нет терминала?): укажите цель аргументом")
+	answer := strings.TrimSpace(line)
+	if err != nil && answer == "" {
+		return codex.Session{}, fmt.Errorf("выбор не прочитан (нет терминала?): укажите цель аргументом или добавьте -yes")
 	}
-	return Resolve(goals, line)
+	switch strings.ToLower(answer) {
+	case "":
+		return def, nil
+	case "q", "n", "нет", "отмена":
+		return codex.Session{}, ErrNoSelection{}
+	}
+	return Resolve(goals, answer)
 }

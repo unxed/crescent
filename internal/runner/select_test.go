@@ -86,7 +86,23 @@ func TestResolveByGoalText(t *testing.T) {
 	}
 }
 
-func TestPickReadsANumber(t *testing.T) {
+// A computer should not ask a human to remember a number it just printed:
+// Enter takes the offered goal.
+func TestPickAcceptsDefaultOnEnter(t *testing.T) {
+	var out bytes.Buffer
+	got, err := Pick(strings.NewReader("\n"), &out, goals(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got.Objective, "Лунобот") {
+		t.Errorf("got %q, want the freshest runnable goal", got.Objective)
+	}
+	if !strings.Contains(out.String(), "Продолжить цель 1") {
+		t.Errorf("the offer was not shown:\n%s", out.String())
+	}
+}
+
+func TestPickNumberOverridesTheDefault(t *testing.T) {
 	var out bytes.Buffer
 	got, err := Pick(strings.NewReader("3\n"), &out, goals(), nil)
 	if err != nil {
@@ -95,15 +111,48 @@ func TestPickReadsANumber(t *testing.T) {
 	if got.ID != goals()[2].ID {
 		t.Errorf("got %s", got.ID)
 	}
-	if !strings.Contains(out.String(), "Какую цель продолжить?") {
-		t.Error("the prompt was not shown")
+}
+
+func TestPickCancelsOnQ(t *testing.T) {
+	var out bytes.Buffer
+	if _, err := Pick(strings.NewReader("q\n"), &out, goals(), nil); err == nil {
+		t.Fatal("q did not cancel")
 	}
 }
 
-func TestPickCancelsOnEmptyInput(t *testing.T) {
+// The offered goal must be one that can actually run: an unusable one would
+// turn a single keystroke into a wasted turn.
+func TestDefaultSkipsWhatCannotRun(t *testing.T) {
+	g := goals()
+	live := func(s codex.Session) bool { return !strings.Contains(s.Objective, "Лунобот") }
+
+	got, ok := Default(g, live)
+	if !ok {
+		t.Fatal("no default found")
+	}
+	if strings.Contains(got.Objective, "Лунобот") {
+		t.Error("the default is a goal with a dead workspace")
+	}
+
 	var out bytes.Buffer
-	if _, err := Pick(strings.NewReader("\n"), &out, goals(), nil); err == nil {
-		t.Fatal("an empty answer was treated as a choice")
+	picked, err := Pick(strings.NewReader("\n"), &out, g, live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if picked.ID != got.ID {
+		t.Errorf("Enter picked %s, not the offered default %s", picked.ID, got.ID)
+	}
+}
+
+func TestDefaultIgnoresFinishedGoals(t *testing.T) {
+	now := time.Now()
+	g := Goals([]codex.Session{
+		{ID: "done", Objective: "готово", Status: "complete", Modified: now},
+		{ID: "live", Objective: "работа", Status: "paused", Modified: now.Add(-time.Hour)},
+	})
+	got, ok := Default(g, nil)
+	if !ok || got.ID != "live" {
+		t.Errorf("default = %v/%v, want the resumable one", got.ID, ok)
 	}
 }
 
@@ -111,8 +160,8 @@ func TestPickCancelsOnEmptyInput(t *testing.T) {
 func TestPickWithoutInputExplainsItself(t *testing.T) {
 	var out bytes.Buffer
 	_, err := Pick(strings.NewReader(""), &out, goals(), nil)
-	if err == nil || !strings.Contains(err.Error(), "аргумент") {
-		t.Fatalf("err = %v, want advice to pass the goal as an argument", err)
+	if err == nil || !strings.Contains(err.Error(), "-yes") {
+		t.Fatalf("err = %v, want advice about -yes", err)
 	}
 }
 

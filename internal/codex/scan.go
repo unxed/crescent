@@ -87,6 +87,7 @@ type Session struct {
 	Path     string // rollout file
 	Cwd      string // working directory, normalised to a filesystem path
 
+	Name      string     // the conversation's own title, as shown in the app
 	Objective string     // the goal text, empty when the session has no goal
 	Status    GoalStatus // last goal status seen in the file
 
@@ -99,6 +100,8 @@ type Session struct {
 	// what makes a report actionable.
 	ObjectiveKey string
 	IDKey        string
+	NameKey      string
+	nameRank     int
 }
 
 // ResetsAt returns the nearest reset still in the future, or the zero time if
@@ -118,6 +121,22 @@ func (s Session) ResetsAt() time.Time {
 // HasGoal reports whether a goal record was found at all.
 func (s Session) HasGoal() bool { return s.Objective != "" || s.Status != StatusUnknown }
 
+// Label is what a human should see: the conversation's own title, which is
+// usually a short summary someone can recognise, followed by the goal text.
+// The title alone is not enough — several chats can share one — and the goal
+// alone is what the list showed before, which reads as a wall of first
+// sentences.
+func (s Session) Label() string {
+	if s.Name == "" {
+		return s.Title()
+	}
+	full := collapse(s.Name) + " — " + collapse(s.Objective)
+	if s.Objective == "" {
+		full = collapse(s.Name)
+	}
+	return clip(full, 78)
+}
+
 // Title is a short single-line label for the UI. Objectives are free-form user
 // text: they arrive with newlines and markdown escaping, neither of which
 // belongs in a list row.
@@ -126,11 +145,15 @@ func (s Session) Title() string {
 	if t == "" {
 		t = "(без цели) " + filepath.Base(s.Path)
 	}
-	t = collapse(t)
-	if len([]rune(t)) > 70 {
-		t = strings.TrimRight(string([]rune(t)[:69]), " ") + "…"
+	return clip(collapse(t), 70)
+}
+
+func clip(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
 	}
-	return t
+	return strings.TrimRight(string(r[:n-1]), " ") + "…"
 }
 
 // collapse turns any run of whitespace into one space and drops markdown
@@ -278,6 +301,12 @@ func (s *Session) applyRecord(v any) {
 					}
 				}
 			}
+		case "chattitle", "threadtitle", "conversationtitle", "sessiontitle":
+			s.setName(val, key, 3)
+		case "title":
+			s.setName(val, key, 2)
+		case "name", "summary", "label":
+			s.setName(val, key, 1)
 		case "goalstatus":
 			if str, ok := val.(string); ok && str != "" {
 				s.Status = GoalStatus(str)
@@ -300,6 +329,28 @@ func (s *Session) applyRecord(v any) {
 		sort.Slice(windows, func(i, j int) bool { return windows[i].At.Before(windows[j].At) })
 		s.Resets = windows
 	}
+}
+
+// setName records the conversation title. Ranking matters because `title` and
+// especially `name` are generic enough to appear on unrelated things inside a
+// transcript — a tool, an item, a file. A qualified key always wins over a bare
+// one, and within the same rank the newest record wins, since the app renames a
+// chat once it has seen a few turns.
+func (s *Session) setName(val any, key string, rank int) {
+	text, ok := val.(string)
+	if !ok {
+		return
+	}
+	text = strings.TrimSpace(text)
+	// A conversation title is a short human phrase. Anything long is prose that
+	// happened to sit under a generic key.
+	if text == "" || len([]rune(text)) > 120 || strings.ContainsAny(text, "\n\r") {
+		return
+	}
+	if rank < s.nameRank {
+		return
+	}
+	s.Name, s.NameKey, s.nameRank = text, key, rank
 }
 
 // setObjective records the goal text and where it came from. walk visits a
