@@ -12,7 +12,7 @@ import (
 
 func loopEnv(t *testing.T, rollouts map[string]string, stream string, exit int) (*Loop, string) {
 	t.Helper()
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	setCacheDir(t, t.TempDir())
 
 	home := t.TempDir()
 	dir := filepath.Join(home, "sessions")
@@ -172,7 +172,7 @@ func TestLoopYieldsToAHuman(t *testing.T) {
 }
 
 func TestStatusFileRoundTrip(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	setCacheDir(t, t.TempDir())
 	w, err := NewStatusWriter()
 	if err != nil {
 		t.Fatal(err)
@@ -199,7 +199,7 @@ func TestStatusFileRoundTrip(t *testing.T) {
 
 // A status file left by a process that has died is a leftover, not a state.
 func TestStatusOfADeadProcessIsReportedAsStopped(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	setCacheDir(t, t.TempDir())
 	w, _ := NewStatusWriter()
 	w.Put(Status{State: StateRunning, PID: 999999})
 

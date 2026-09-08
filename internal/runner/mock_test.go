@@ -69,3 +69,16 @@ func jsonPath(p string) string {
 	q := strconv.Quote(filepath.ToSlash(p))
 	return q[1 : len(q)-1]
 }
+
+// setCacheDir points the user cache at dir, on whichever variable this platform
+// actually consults.
+//
+// os.UserCacheDir reads XDG_CACHE_HOME on Unix and %LocalAppData% on Windows.
+// Setting only the first meant the Windows tests quietly used the runner's real
+// cache: one test that expected an unusable directory got a perfectly usable
+// one and failed, and the others wrote megabytes where they had no business.
+func setCacheDir(t *testing.T, dir string) {
+	t.Helper()
+	t.Setenv("XDG_CACHE_HOME", dir)
+	t.Setenv("LocalAppData", dir)
+}

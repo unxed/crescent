@@ -9,7 +9,7 @@ import (
 
 // A daemon meant to run for days must not fill the disk with its own diary.
 func TestLogRotatesOnceItGrows(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	setCacheDir(t, t.TempDir())
 
 	path, err := LogPath()
 	if err != nil {
@@ -40,7 +40,7 @@ func TestLogRotatesOnceItGrows(t *testing.T) {
 
 // Watching a run live and reading it afterwards must not be a choice.
 func TestLogWriterFeedsBothConsoleAndFile(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	setCacheDir(t, t.TempDir())
 
 	var console bytes.Buffer
 	w, file := LogWriter(&console)
@@ -68,7 +68,7 @@ func TestLogWriterSurvivesAnUnusableCacheDir(t *testing.T) {
 	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("XDG_CACHE_HOME", blocker) // a file where a directory is expected
+	setCacheDir(t, blocker) // a file where a directory is expected
 
 	var console bytes.Buffer
 	w, file := LogWriter(&console)
