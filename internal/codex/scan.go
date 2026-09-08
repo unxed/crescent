@@ -230,6 +230,13 @@ func ScanWithProgress(dir string, report Progress) ([]Session, error) {
 		s.Modified, s.Size = fi.ModTime(), fi.Size()
 		out = append(out, s)
 	}
+	// Chat names live in the app's own index, not in the rollouts, and that
+	// file changes independently — so names are applied after the cache, never
+	// stored in it.
+	if home, err := Home(); err == nil {
+		applyIndex(out, LoadIndex(home))
+	}
+
 	sort.Slice(out, func(i, j int) bool { return out[i].Modified.After(out[j].Modified) })
 	return out, nil
 }

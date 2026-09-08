@@ -321,6 +321,18 @@ func runDoctor(dir string) {
 	}
 
 	fmt.Println()
+	fmt.Println("Индекс разговоров (имена чатов):")
+	if home, err := codex.Home(); err == nil {
+		if keys, err := codex.IndexKeys(home); err == nil {
+			names := codex.LoadIndex(home)
+			fmt.Printf("    %s: имён загружено %d\n", codex.IndexFile, len(names))
+			fmt.Printf("    поля: %s\n", strings.Join(codex.SortedKeys(keys), ", "))
+		} else {
+			fmt.Printf("    %s не прочитан: %v\n", codex.IndexFile, err)
+		}
+	}
+
+	fmt.Println()
 	fmt.Println("Рабочие каталоги целей:")
 	sessions, err := codex.Scan(dir)
 	if err != nil {
