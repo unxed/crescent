@@ -36,12 +36,21 @@ type Policy struct {
 	// MaxTurns caps consecutive turns per session before moving to the next,
 	// so one goal cannot monopolise the whole window.
 	MaxTurns int
+
+	// CodexPath is the binary to invoke. Resolved rather than assumed, because
+	// the CLI is routinely installed somewhere that is not on PATH.
+	CodexPath string
 }
 
 // DefaultPolicy is deliberately conservative: it can edit its own workspace and
 // warm the Go caches, and nothing else.
 func DefaultPolicy() Policy {
+	path, _ := FindCodex()
+	if path == "" {
+		path = "codex"
+	}
 	return Policy{
+		CodexPath:     path,
 		Sandbox:       "workspace-write",
 		WritableRoots: GoCaches(),
 		Prompt:        "Продолжай работу над текущей целью.",

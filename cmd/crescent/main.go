@@ -34,7 +34,12 @@ func main() {
 	keys := flag.Bool("keys", false, "with -dump: also list JSON key names seen (names only, no values)")
 	doctor := flag.Bool("doctor", false, "check the machine: codex CLI, its flags, Go caches, workspaces")
 	plan := flag.Bool("plan", false, "print what crescent would run, without running anything")
+	codexPath := flag.String("codex", "", "path to the codex binary (overrides the search and "+runner.EnvCodex+")")
 	flag.Parse()
+
+	if *codexPath != "" {
+		os.Setenv(runner.EnvCodex, *codexPath)
+	}
 
 	dir, err := codex.SessionsDir()
 	if err != nil {
@@ -196,7 +201,13 @@ func runDoctor(dir string) {
 	d := runner.Diagnose()
 	fmt.Println("Codex CLI:")
 	if d.CodexPath == "" {
-		fmt.Println("    не найден в PATH")
+		fmt.Println("    не найден. Искал здесь:")
+		for _, t := range d.Tried {
+			fmt.Println("        " + t)
+		}
+		fmt.Println("    Если codex стоит в другом месте, покажите путь:")
+		fmt.Println("        crescent -codex /путь/к/codex -doctor")
+		fmt.Println("    Узнать путь можно так:  type -a codex   или   command -v codex")
 	} else {
 		fmt.Printf("    %s\n    версия: %s\n", d.CodexPath, orDash(d.CodexVersion))
 		fmt.Printf("    exec: %v, exec resume: %v, --json: %v\n", d.HasExec, d.HasResume, d.HasJSON)
@@ -218,16 +229,21 @@ func runDoctor(dir string) {
 	if err != nil {
 		fmt.Println("    каталог сессий не прочитан:", err)
 	} else {
+		live, gone := 0, 0
 		for _, s := range sessions {
 			if !s.HasGoal() {
 				continue
 			}
-			mark := "НЕТ"
+			mark := "НЕТ "
 			if fi, err := os.Stat(s.Cwd); err == nil && fi.IsDir() {
 				mark = "есть"
+				live++
+			} else {
+				gone++
 			}
-			fmt.Printf("    %-4s %s\n", mark, orDash(s.Cwd))
+			fmt.Printf("    %s  %-46s  %s\n", mark, truncate(orDash(s.Cwd), 46), s.Title())
 		}
+		fmt.Printf("    итого: %d живых, %d исчезло\n", live, gone)
 	}
 
 	if len(d.Problems) > 0 {
@@ -247,6 +263,11 @@ func runPlan(sessions []codex.Session) {
 
 	fmt.Println("crescent — план (ничего не запускается)")
 	fmt.Println()
+	if pol.CodexPath == "codex" {
+		fmt.Println("ВНИМАНИЕ: codex не найден, команды напечатаны с голым именем.")
+		fmt.Println("Запустите crescent -doctor, чтобы увидеть, где он искался.")
+		fmt.Println()
+	}
 
 	switch {
 	case pl.Interrupt:
@@ -269,7 +290,7 @@ func runPlan(sessions []codex.Session) {
 		}
 		n++
 		fmt.Printf("\n%d. %s\n", n, st.Session.Title())
-		fmt.Printf("   %s\n", shellLine(st.Args))
+		fmt.Printf("   %s\n", shellLine(pol.CodexPath, st.Args))
 	}
 	if n == 0 {
 		fmt.Println("   пусто")
@@ -292,17 +313,31 @@ func runPlan(sessions []codex.Session) {
 // shellLine renders argv so it can be pasted into a terminal as-is. The prompt
 // contains spaces, so an unquoted join would print a command that means
 // something different from the one crescent would run.
-func shellLine(args []string) string {
+func shellLine(bin string, args []string) string {
+	if bin == "" {
+		bin = "codex"
+	}
 	quoted := make([]string, 0, len(args)+1)
-	quoted = append(quoted, "codex")
+	quoted = append(quoted, maybeQuote(bin))
 	for _, a := range args {
-		if a == "" || strings.ContainsAny(a, " \t\n\"'\\$`*?[]{}()<>|&;#~") {
-			quoted = append(quoted, "'"+strings.ReplaceAll(a, "'", `'\''`)+"'")
-			continue
-		}
-		quoted = append(quoted, a)
+		quoted = append(quoted, maybeQuote(a))
 	}
 	return strings.Join(quoted, " ")
+}
+
+func maybeQuote(a string) string {
+	if a == "" || strings.ContainsAny(a, " \t\n\"'\\$`*?[]{}()<>|&;#~") {
+		return "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+	}
+	return a
+}
+
+func truncate(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n-1]) + "…"
 }
 
 func orDash(s string) string {

@@ -1,6 +1,8 @@
 package runner
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -143,4 +145,114 @@ func indexOf(ss []string, want string) int {
 		}
 	}
 	return -1
+}
+
+// A machine with daily Codex use and 331 rollout files still had no `codex` on
+// PATH: the installers put it in a user-local bin, an npm or nvm prefix, or the
+// desktop app's own directory. Failing on PATH alone was wrong.
+func TestFindCodexHonoursExplicitOverride(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "codex")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho hi\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(EnvCodex, bin)
+
+	got, tried := FindCodex()
+	if got != bin {
+		t.Errorf("FindCodex = %q, want the override %q", got, bin)
+	}
+	if len(tried) == 0 {
+		t.Error("the searched locations were not reported")
+	}
+}
+
+func TestFindCodexReportsWhereItLooked(t *testing.T) {
+	t.Setenv(EnvCodex, "")
+	t.Setenv("PATH", t.TempDir()) // guaranteed to contain no codex
+	t.Setenv("HOME", t.TempDir())
+
+	got, tried := FindCodex()
+	if got != "" {
+		t.Fatalf("found %q in an empty environment", got)
+	}
+	if len(tried) < 2 {
+		t.Fatalf("only %d locations reported; a failure must say where it looked", len(tried))
+	}
+	joined := strings.Join(tried, "\n")
+	for _, want := range []string{"PATH", ".local/bin/codex", "/usr/local/bin/codex"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("did not try %s:\n%s", want, joined)
+		}
+	}
+}
+
+// A non-executable file of the right name must not be mistaken for the CLI.
+func TestFindCodexIgnoresNonExecutable(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "codex")
+	if err := os.WriteFile(bin, []byte("not executable"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(EnvCodex, bin)
+	if got, _ := FindCodex(); got != "" {
+		t.Errorf("FindCodex = %q, want empty for a non-executable file", got)
+	}
+}
+
+// The ChatGPT desktop app bundles the Codex CLI inside its own installation,
+// and there is no standalone `codex` anywhere: on a real machine `whereis
+// codex` came back empty while /usr/lib/chatgpt was present. The layout is
+// undocumented and versioned, so the binary is found by walking, not guessing.
+func TestFindCodexWalksAnAppInstallation(t *testing.T) {
+	root := t.TempDir()
+	deep := filepath.Join(root, "resources", "bin", "0.153.0-alpha.5")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(deep, "codex")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := searchUnder(root, "codex", 7); got != bin {
+		t.Errorf("searchUnder = %q, want %q", got, bin)
+	}
+}
+
+// Bounding the walk is what keeps "look inside the app" from turning into a
+// scan of the whole disk.
+func TestSearchUnderRespectsDepthLimit(t *testing.T) {
+	root := t.TempDir()
+	deep := filepath.Join(root, "a", "b", "c", "d", "e", "f", "g", "h")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deep, "codex"), []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := searchUnder(root, "codex", 3); got != "" {
+		t.Errorf("searchUnder ignored the depth limit and returned %q", got)
+	}
+}
+
+// A per-version directory must yield the newest build, not the alphabetically
+// first one.
+func TestNewestMatchPrefersLaterVersions(t *testing.T) {
+	root := t.TempDir()
+	for _, v := range []string{"0.144.0", "0.153.0", "0.147.0"} {
+		d := filepath.Join(root, v)
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "codex"), []byte("x"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := newestMatch(filepath.Join(root, "*", "codex"))
+	if len(got) != 3 {
+		t.Fatalf("matches = %d, want 3", len(got))
+	}
+	if !strings.Contains(got[0], "0.153.0") {
+		t.Errorf("first match = %s, want the newest version", got[0])
+	}
 }

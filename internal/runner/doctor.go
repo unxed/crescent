@@ -13,6 +13,7 @@ import (
 type Doctor struct {
 	CodexPath    string
 	CodexVersion string
+	Tried        []string // every location searched, for when nothing is found
 	HasExec      bool
 	HasResume    bool
 	HasJSON      bool
@@ -28,9 +29,11 @@ type Doctor struct {
 func Diagnose() Doctor {
 	var d Doctor
 
-	path, err := exec.LookPath(codexBinary())
-	if err != nil {
-		d.Problems = append(d.Problems, "исполняемый файл codex не найден в PATH")
+	path, tried := FindCodex()
+	d.Tried = tried
+	if path == "" {
+		d.Problems = append(d.Problems,
+			"исполняемый файл codex не найден; укажите его через "+EnvCodex+" или -codex")
 		return d
 	}
 	d.CodexPath = path
@@ -60,8 +63,6 @@ func Diagnose() Doctor {
 	}
 	return d
 }
-
-func codexBinary() string { return "codex" }
 
 func run(name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
