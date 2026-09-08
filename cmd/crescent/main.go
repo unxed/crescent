@@ -16,6 +16,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -68,17 +69,37 @@ func runDump(dir string, sessions []codex.Session, scanErr error, withKeys bool)
 		return
 	}
 
-	var goals, limited int
+	var goals int
 	for _, s := range sessions {
 		if s.HasGoal() {
 			goals++
 		}
-		if !s.ResetsAt.IsZero() {
-			limited++
-		}
 	}
-	fmt.Printf("файлов: %d, из них с целью: %d, со временем сброса лимита: %d\n\n",
-		len(sessions), goals, limited)
+	fmt.Printf("файлов: %d, из них с целью: %d\n\n", len(sessions), goals)
+
+	// The limit belongs to the account, not to a session. Almost every rollout
+	// carries a snapshot, but an old one only records the window that was
+	// current when that session last ran — which is why a directory of old
+	// sessions is full of reset times that lapsed days ago.
+	fmt.Println("Лимиты аккаунта (по самому свежему rollout-файлу):")
+	if from, windows, ok := codex.AccountLimits(sessions); ok {
+		fmt.Printf("    источник: %s (изменён %s)\n",
+			filepath.Base(from.Path), from.Modified.Format("2006-01-02 15:04:05"))
+		for _, w := range windows {
+			mark := "истекло"
+			if d := time.Until(w.At); d > 0 {
+				mark = "через " + d.Round(time.Minute).String()
+			}
+			fmt.Printf("    %-14s %s  (%s)   [поле: %s]\n",
+				mark, w.At.Local().Format("2006-01-02 15:04:05"), humanWindow(w.At), w.Key)
+		}
+		if next := codex.NextReset(sessions); next.IsZero() {
+			fmt.Println("    ни одно окно не активно — лимит сейчас не мешает")
+		}
+	} else {
+		fmt.Println("    не найдено")
+	}
+	fmt.Println()
 
 	shown := 0
 	for _, s := range sessions {
@@ -89,16 +110,16 @@ func runDump(dir string, sessions []codex.Session, scanErr error, withKeys bool)
 		fmt.Printf("• %s\n", s.Title())
 		fmt.Printf("    файл:     %s (%d КиБ, изменён %s)\n",
 			s.Path, s.Size/1024, s.Modified.Format("2006-01-02 15:04:05"))
-		fmt.Printf("    id:       %s\n", orDash(s.ID))
+		fmt.Printf("    id:       %s  [из: %s]\n", orDash(s.ID), orDash(s.IDKey))
 		fmt.Printf("    cwd:      %s\n", orDash(s.Cwd))
-		fmt.Printf("    статус:   %s (возобновляемый: %v)\n", orDash(string(s.Status)), s.Status.Resumable())
-		if s.ResetsAt.IsZero() {
-			fmt.Printf("    сброс:    не найден\n")
-		} else {
-			fmt.Printf("    сброс:    %s (через %s)\n",
-				s.ResetsAt.Local().Format("2006-01-02 15:04:05"),
-				time.Until(s.ResetsAt).Round(time.Minute))
+		if s.ParentID != "" {
+			fmt.Printf("    продолж.: %s\n", s.ParentID)
 		}
+		fmt.Printf("    статус:   %s (возобновляемый: %v)\n", orDash(string(s.Status)), s.Status.Resumable())
+		if s.ObjectiveKey != "" {
+			fmt.Printf("    цель из:  поле %q\n", s.ObjectiveKey)
+		}
+		fmt.Printf("    окна:     %s\n", windowSummary(s))
 	}
 
 	if goals == 0 && len(sessions) > 0 {
@@ -135,6 +156,35 @@ func runDump(dir string, sessions []codex.Session, scanErr error, withKeys bool)
 	}
 }
 
+// humanWindow labels a window by how far out it sits: Codex runs a rolling
+// five-hour allowance alongside a weekly one, and the distance tells them apart
+// without having to know the key names.
+func humanWindow(at time.Time) string {
+	switch d := time.Until(at); {
+	case d <= 0:
+		return "уже прошло"
+	case d <= 6*time.Hour:
+		return "похоже на 5-часовое окно"
+	default:
+		return "похоже на недельное окно"
+	}
+}
+
+func windowSummary(s codex.Session) string {
+	if len(s.Resets) == 0 {
+		return "не найдены"
+	}
+	parts := make([]string, 0, len(s.Resets))
+	for _, r := range s.Resets {
+		parts = append(parts, r.At.Local().Format("01-02 15:04"))
+	}
+	live := "все истекли"
+	if n := s.ResetsAt(); !n.IsZero() {
+		live = "ближайшее живое через " + time.Until(n).Round(time.Minute).String()
+	}
+	return fmt.Sprintf("%s — %s", strings.Join(parts, ", "), live)
+}
+
 func orDash(s string) string {
 	if strings.TrimSpace(s) == "" {
 		return "—"
@@ -169,9 +219,6 @@ func runGUI(dir string, sessions []codex.Session) error {
 	boxes := make([]*goWidgets.CheckBox, 0, len(goals))
 	for _, g := range goals {
 		label := g.Title()
-		if !g.ResetsAt.IsZero() {
-			label += fmt.Sprintf("  [лимит до %s]", g.ResetsAt.Local().Format("15:04"))
-		}
 		box, err := win.AddCheckBox(label, true)
 		if err != nil {
 			return err
@@ -196,9 +243,15 @@ func runGUI(dir string, sessions []codex.Session) error {
 		}
 		return n
 	}
+	next := codex.NextReset(sessions)
 	refresh := func() {
-		status.Text.Set(fmt.Sprintf("Найдено целей: %d, в очереди: %d. Каталог: %s",
-			len(goals), selected(), dir))
+		limit := "лимит свободен"
+		if !next.IsZero() {
+			limit = "лимит до " + next.Local().Format("15:04") +
+				" (" + time.Until(next).Round(time.Minute).String() + ")"
+		}
+		status.Text.Set(fmt.Sprintf("Целей: %d, в очереди: %d. %s",
+			len(goals), selected(), limit))
 	}
 	for _, b := range boxes {
 		b.Toggled.On(app.Scope(), func(bool) { refresh() })

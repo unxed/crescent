@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -71,31 +72,83 @@ func (s GoalStatus) Resumable() bool {
 	return true
 }
 
+// Reset is one usage-limit window found in a rollout, with the key it came
+// from. Codex records more than one window per snapshot — a rolling 5-hour one
+// and a weekly one — so a single "the reset time" field would be a coin flip.
+type Reset struct {
+	At  time.Time
+	Key string // the JSON key it was read from, for diagnostics
+}
+
 // Session is one rollout file, summarised.
 type Session struct {
-	ID        string     // session/thread UUID
-	Path      string     // rollout file
-	Cwd       string     // working directory the session was started in
+	ID       string // this rollout's own session UUID
+	ParentID string // the thread it was forked or continued from, if any
+	Path     string // rollout file
+	Cwd      string // working directory, normalised to a filesystem path
+
 	Objective string     // the goal text, empty when the session has no goal
 	Status    GoalStatus // last goal status seen in the file
-	ResetsAt  time.Time  // when the usage limit lifts; zero if unknown
-	Modified  time.Time  // file mtime — the "is someone working here?" signal
-	Size      int64
+
+	Resets   []Reset   // every usage-limit window found, in file order
+	Modified time.Time // file mtime — the "is someone working here?" signal
+	Size     int64
+
+	// Provenance, so `-dump` can say where a value came from. The rollout
+	// schema is undocumented; knowing which key produced a suspicious value is
+	// what makes a report actionable.
+	ObjectiveKey string
+	IDKey        string
+}
+
+// ResetsAt returns the nearest reset still in the future, or the zero time if
+// every window found has already lapsed. An old rollout keeps whatever window
+// was current when it last ran, so a past value says nothing about now.
+func (s Session) ResetsAt() time.Time {
+	var best time.Time
+	now := time.Now()
+	for _, r := range s.Resets {
+		if r.At.After(now) && (best.IsZero() || r.At.Before(best)) {
+			best = r.At
+		}
+	}
+	return best
 }
 
 // HasGoal reports whether a goal record was found at all.
 func (s Session) HasGoal() bool { return s.Objective != "" || s.Status != StatusUnknown }
 
-// Title is a short label for the UI.
+// Title is a short single-line label for the UI. Objectives are free-form user
+// text: they arrive with newlines and markdown escaping, neither of which
+// belongs in a list row.
 func (s Session) Title() string {
 	t := s.Objective
 	if t == "" {
 		t = "(без цели) " + filepath.Base(s.Path)
 	}
+	t = collapse(t)
 	if len([]rune(t)) > 70 {
-		t = string([]rune(t)[:69]) + "…"
+		t = strings.TrimRight(string([]rune(t)[:69]), " ") + "…"
 	}
 	return t
+}
+
+// collapse turns any run of whitespace into one space and drops markdown
+// backslash escaping, so `docs/PLAN\_A.md` reads as written.
+func collapse(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	var b strings.Builder
+	b.Grow(len(s))
+	prevEsc := false
+	for _, r := range s {
+		if r == '\\' && !prevEsc {
+			prevEsc = true
+			continue
+		}
+		b.WriteRune(r)
+		prevEsc = false
+	}
+	return b.String()
 }
 
 // Scan walks the sessions directory and summarises every rollout file.
@@ -147,8 +200,16 @@ var uuidRe = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0
 // ScanFile summarises a single rollout file.
 func ScanFile(path string) (Session, error) {
 	s := Session{Path: path}
-	if m := uuidRe.FindString(filepath.Base(path)); m != "" {
-		s.ID = m
+	// Rollout names look like rollout-<ts>-<uuid>.jsonl or, for a session
+	// continued from another thread, rollout-<ts>-<parent>_<own>.jsonl. Taking
+	// the first UUID reports the parent, which makes distinct files collide on
+	// one id — visible in the wild as two rollouts claiming the same session.
+	if ids := uuidRe.FindAllString(filepath.Base(path), -1); len(ids) > 0 {
+		s.ID = ids[len(ids)-1]
+		s.IDKey = "filename"
+		if len(ids) > 1 {
+			s.ParentID = ids[0]
+		}
 	}
 
 	head, tail, err := readEnds(path, headTail)
@@ -175,28 +236,31 @@ func (s *Session) applyRecord(v any) {
 		switch normKey(key) {
 		case "cwd", "workingdirectory", "workdir":
 			if str, ok := val.(string); ok && str != "" {
-				s.Cwd = str
+				s.Cwd = normalizePath(str)
 			}
 		case "id", "sessionid", "threadid", "conversationid":
-			if str, ok := val.(string); ok && uuidRe.MatchString(str) && s.ID == "" {
-				s.ID = str
+			// A value recorded inside the file beats one guessed from its name.
+			if str, ok := val.(string); ok && uuidRe.MatchString(str) {
+				if s.IDKey == "" || s.IDKey == "filename" {
+					s.ID, s.IDKey = str, key
+				}
 			}
 		case "objective", "goaltext", "goalobjective":
 			if str, ok := val.(string); ok && str != "" {
-				s.Objective = str
+				s.setObjective(str, key)
 			}
 		case "goal":
 			switch g := val.(type) {
 			case string:
 				if g != "" {
-					s.Objective = g
+					s.setObjective(g, key)
 				}
 			case map[string]any:
 				for k, gv := range g {
 					switch normKey(k) {
 					case "objective", "text", "prompt", "description":
 						if str, ok := gv.(string); ok && str != "" {
-							s.Objective = str
+							s.setObjective(str, key+"."+k)
 						}
 					case "status", "state":
 						if str, ok := gv.(string); ok && str != "" {
@@ -211,17 +275,58 @@ func (s *Session) applyRecord(v any) {
 			}
 		case "resetsat", "resetat", "resetsatunix", "resettime":
 			if t, ok := parseTime(val); ok {
-				s.ResetsAt = t
+				s.addReset(t, key)
 			}
 		case "resetsinseconds", "resetafterseconds":
 			if secs, ok := toFloat(val); ok && secs > 0 {
-				// Relative offsets are anchored to now, not to file mtime: the
-				// caller reads this immediately after Codex wrote it, and an
-				// anchor that is too early only makes the relay wait longer.
-				s.ResetsAt = time.Now().Add(time.Duration(secs) * time.Second)
+				// Relative offsets are anchored to now, not to file mtime: an
+				// anchor that is too early only makes crescent wait longer,
+				// while too late would make it hammer a still-closed window.
+				s.addReset(time.Now().Add(time.Duration(secs)*time.Second), key)
 			}
 		}
 	})
+}
+
+// setObjective records the goal text and where it came from. walk visits a
+// nested object both through its parent key and again through its own keys, and
+// Go randomises map iteration order, so the qualified path is pinned once found
+// — otherwise the reported provenance would differ between runs.
+func (s *Session) setObjective(text, key string) {
+	s.Objective = text
+	if s.ObjectiveKey == "" || !strings.Contains(s.ObjectiveKey, ".") {
+		s.ObjectiveKey = key
+	}
+}
+
+// addReset records a window, keeping the list free of duplicates: the same
+// snapshot is written to the rollout on every turn.
+func (s *Session) addReset(t time.Time, key string) {
+	for _, r := range s.Resets {
+		if r.At.Equal(t) {
+			return
+		}
+	}
+	s.Resets = append(s.Resets, Reset{At: t, Key: key})
+}
+
+// normalizePath turns what Codex records as a working directory into a path
+// that can actually be passed to a process. Some records hold a plain path,
+// others a file:// URL, and those are percent-encoded — a cwd with non-ASCII
+// characters arrives as file:///home/u/%D0%94%D0%BE%D0%BA... and is useless
+// until decoded.
+func normalizePath(s string) string {
+	if !strings.HasPrefix(s, "file://") {
+		return s
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return s
+	}
+	if p := u.Path; p != "" {
+		return filepath.FromSlash(p)
+	}
+	return s
 }
 
 // walk visits every key/value pair in a decoded JSON document.
@@ -348,4 +453,45 @@ func readEnds(path string, n int64) (head, tail []byte, err error) {
 		return head, nil, err
 	}
 	return head, tail, nil
+}
+
+// AccountLimits reports the usage-limit windows that are actually in force.
+//
+// This cannot be read off an individual session. The limit is per account, not
+// per session, and a rollout keeps whatever snapshot was current the last time
+// that session ran — which is why a directory of old sessions is full of reset
+// times that lapsed days ago. Only the most recently written rollout carries a
+// snapshot worth believing.
+func AccountLimits(sessions []Session) (from Session, windows []Reset, ok bool) {
+	var newest *Session
+	for i := range sessions {
+		if len(sessions[i].Resets) == 0 {
+			continue
+		}
+		if newest == nil || sessions[i].Modified.After(newest.Modified) {
+			newest = &sessions[i]
+		}
+	}
+	if newest == nil {
+		return Session{}, nil, false
+	}
+	windows = append(windows, newest.Resets...)
+	sort.Slice(windows, func(i, j int) bool { return windows[i].At.Before(windows[j].At) })
+	return *newest, windows, true
+}
+
+// NextReset returns the nearest window still ahead of us, across the whole
+// account. Zero means nothing is currently limited, as far as the files show.
+func NextReset(sessions []Session) time.Time {
+	_, windows, ok := AccountLimits(sessions)
+	if !ok {
+		return time.Time{}
+	}
+	now := time.Now()
+	for _, w := range windows {
+		if w.At.After(now) {
+			return w.At
+		}
+	}
+	return time.Time{}
 }
