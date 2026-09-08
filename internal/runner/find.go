@@ -12,6 +12,25 @@ import (
 // EnvCodex overrides the search entirely.
 const EnvCodex = "CRESCENT_CODEX"
 
+// System-wide locations, in variables rather than literals so that a test can
+// empty them. Without that, a test asserting "nothing is found in an empty
+// environment" would pass here and fail on any machine that actually has the
+// desktop app installed — which is every machine that matters.
+var (
+	systemCandidates = []string{
+		"/usr/local/bin/codex",
+		"/opt/codex/bin/codex",
+		"/usr/lib/node_modules/@openai/codex/bin/codex.js",
+		"/snap/bin/codex",
+	}
+	systemAppRoots = []string{
+		"/usr/lib/chatgpt",
+		"/usr/share/chatgpt",
+		"/opt/chatgpt",
+		"/usr/lib/codex",
+	}
+)
+
 // FindCodex locates the Codex CLI and reports every place it looked.
 //
 // PATH alone is not enough: on a machine with 331 rollout files and daily Codex
@@ -82,7 +101,7 @@ func appRoots() []string {
 		}
 		return append(out, "/Applications/ChatGPT.app", "/Applications/Codex.app")
 	default:
-		out := []string{"/usr/lib/chatgpt", "/usr/share/chatgpt", "/opt/chatgpt", "/usr/lib/codex"}
+		out := append([]string(nil), systemAppRoots...)
 		if home != "" {
 			out = append(out,
 				join(home, ".local", "share", "OpenAI"),
@@ -159,12 +178,7 @@ func candidates() []string {
 		out = append(out, newestMatch(join(home, ".local", "share", "OpenAI", "Codex", "bin", "*", "codex"))...)
 		out = append(out, newestMatch(join(home, ".nvm", "versions", "node", "*", "bin", "codex"))...)
 	}
-	out = append(out,
-		"/usr/local/bin/codex",
-		"/opt/codex/bin/codex",
-		"/usr/lib/node_modules/@openai/codex/bin/codex.js",
-		"/snap/bin/codex",
-	)
+	out = append(out, systemCandidates...)
 	if runtime.GOOS == "darwin" {
 		out = append(out,
 			"/Applications/Codex.app/Contents/MacOS/codex",

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/unxed/crescent/internal/codex"
@@ -25,7 +26,11 @@ type Loop struct {
 	// real work. See Run.
 	ReadOnlyProbe bool
 
-	status  *StatusWriter
+	status *StatusWriter
+
+	// current is written by the loop and read by whatever is showing the state
+	// — a tray icon polling from another goroutine, for instance.
+	mu      sync.Mutex
 	current Status
 }
 
@@ -52,6 +57,7 @@ func NewLoop(dir string, p Policy) (*Loop, error) {
 }
 
 func (l *Loop) setState(s State, msg string, until time.Time, goal *codex.Session) {
+	l.mu.Lock()
 	if l.current.State != s || l.current.Message != msg {
 		l.current.Since = time.Now()
 	}
@@ -61,8 +67,18 @@ func (l *Loop) setState(s State, msg string, until time.Time, goal *codex.Sessio
 	} else {
 		l.current.Goal, l.current.GoalID = "", ""
 	}
-	l.status.Put(l.current)
-	l.logf("%s", l.current.Line())
+	snapshot := l.current
+	l.mu.Unlock()
+
+	l.status.Put(snapshot)
+	l.logf("%s", snapshot.Line())
+}
+
+// bump applies a counter change under the same lock as the state.
+func (l *Loop) bump(f func(*Status)) {
+	l.mu.Lock()
+	f(&l.current)
+	l.mu.Unlock()
 }
 
 func (l *Loop) logf(format string, a ...any) {
@@ -114,15 +130,19 @@ func (l *Loop) stop() {
 	l.status.Remove()
 }
 
-// Status returns the daemon's current state.
-func (l *Loop) Status() Status { return l.current }
+// Status returns the daemon's current state. Safe from any goroutine.
+func (l *Loop) Status() Status {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.current
+}
 
 // step does one unit of work and reports how long to wait before the next one.
 func (l *Loop) step(ctx context.Context) time.Duration {
 	sessions, err := codex.Scan(l.Dir)
 	if err != nil {
 		l.setState(StateFailed, "каталог сессий не прочитан: "+err.Error(), time.Time{}, nil)
-		l.current.Errors++
+		l.bump(func(s *Status) { s.Errors++ })
 		return l.Tick
 	}
 
@@ -154,15 +174,15 @@ func (l *Loop) step(ctx context.Context) time.Duration {
 
 	res, err := RunOnce(ctx, l.Policy, goal, Options{Trace: l.Log, Timeout: 60 * time.Minute})
 	if err != nil {
-		l.current.Errors++
+		l.bump(func(s *Status) { s.Errors++ })
 		l.setState(StateFailed, err.Error(), time.Time{}, &goal)
 		return l.Tick
 	}
-	l.current.Turns++
+	l.bump(func(s *Status) { s.Turns++ })
 
 	switch {
 	case res.UsageLimited:
-		l.current.Limits++
+		l.bump(func(s *Status) { s.Limits++ })
 		until := res.ResetsAt
 		if until.IsZero() {
 			until = codex.NextReset(sessions)
@@ -171,7 +191,7 @@ func (l *Loop) step(ctx context.Context) time.Duration {
 		return l.Tick
 
 	case res.ExitCode != 0:
-		l.current.Errors++
+		l.bump(func(s *Status) { s.Errors++ })
 		msg := fmt.Sprintf("ход завершился с кодом %d", res.ExitCode)
 		if len(res.Errors) > 0 {
 			msg += ": " + res.Errors[0]

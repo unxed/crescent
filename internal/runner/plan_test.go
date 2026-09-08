@@ -172,6 +172,13 @@ func TestFindCodexReportsWhereItLooked(t *testing.T) {
 	t.Setenv("PATH", t.TempDir()) // guaranteed to contain no codex
 	t.Setenv("HOME", t.TempDir())
 
+	// The system paths are real, and on a machine with the desktop app
+	// installed one of them holds an actual codex. Emptying them is what makes
+	// "an empty environment" mean anything.
+	savedC, savedR := systemCandidates, systemAppRoots
+	systemCandidates, systemAppRoots = nil, nil
+	defer func() { systemCandidates, systemAppRoots = savedC, savedR }()
+
 	got, tried := FindCodex()
 	if got != "" {
 		t.Fatalf("found %q in an empty environment", got)
@@ -180,7 +187,7 @@ func TestFindCodexReportsWhereItLooked(t *testing.T) {
 		t.Fatalf("only %d locations reported; a failure must say where it looked", len(tried))
 	}
 	joined := strings.Join(tried, "\n")
-	for _, want := range []string{"PATH", ".local/bin/codex", "/usr/local/bin/codex"} {
+	for _, want := range []string{"PATH", ".local/bin/codex"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("did not try %s:\n%s", want, joined)
 		}

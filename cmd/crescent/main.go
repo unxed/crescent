@@ -50,6 +50,7 @@ func main() {
 	run := flag.Bool("run", false, "background mode: push goals forward, waiting out usage limits")
 	noProbe := flag.Bool("no-probe", false, "with -run: skip the read-only self-check")
 	status := flag.Bool("status", false, "print what a running background process is doing")
+	tray := flag.Bool("tray", false, "run in the status area: icon plus background work, no console")
 	flag.Parse()
 
 	// Go's flag package stops parsing at the first positional argument, so
@@ -101,6 +102,14 @@ func main() {
 
 	if *status {
 		if err := showStatus(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if *tray {
+		if err := runTray(dir, *readOnly, *noProbe, *prompt); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -186,7 +195,8 @@ func main() {
 		fmt.Println("    crescent -run-once -read-only 2    сразу нужную")
 	}
 	fmt.Println("Гнать цели в фоне, пока не кончатся:")
-	fmt.Println("    crescent -run                      ждёт сброса лимита и продолжает сам")
+	fmt.Println("    crescent -tray                     иконка в трее, работа за ней")
+	fmt.Println("    crescent -run                      то же в терминале")
 	fmt.Println("    crescent -status                   что он делает прямо сейчас")
 	fmt.Println("Ещё:  -plan (очередь)   -doctor (окружение)   -dump (подробно)   -gui (окно)")
 }
