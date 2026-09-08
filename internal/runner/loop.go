@@ -41,7 +41,17 @@ type Loop struct {
 	// has had. Together they make the queue a rotation instead of a spotlight.
 	currentID string
 	streak    int
+
+	// blocked holds goals another client has open, and until when to leave them
+	// be. The desktop app keeps a thread locked while it is on screen, and
+	// hammering it every tick would achieve nothing but noise.
+	blocked map[string]time.Time
 }
+
+// blockedFor is how long a goal is left alone after Codex says someone else is
+// writing to it. Long enough not to spin, short enough that closing the app
+// brings the goal back into the rotation within a couple of turns.
+const blockedFor = 10 * time.Minute
 
 // NewLoop prepares a daemon with sensible defaults.
 func NewLoop(dir string, p Policy) (*Loop, error) {
@@ -57,6 +67,7 @@ func NewLoop(dir string, p Policy) (*Loop, error) {
 		ReadOnlyProbe: true,
 		status:        w,
 		own:           OwnWrites{},
+		blocked:       map[string]time.Time{},
 		current: Status{
 			State:     StateStarting,
 			Since:     time.Now(),
@@ -194,7 +205,22 @@ func (l *Loop) step(ctx context.Context) time.Duration {
 		return l.Tick
 	}
 
-	goal := l.pick(runnable, pol.MaxTurns)
+	// Goals another client has open are out of the rotation for now, not out of
+	// it for good.
+	free := runnable[:0:0]
+	for _, st := range runnable {
+		if until, ok := l.blocked[st.Session.ID]; ok && time.Now().Before(until) {
+			continue
+		}
+		free = append(free, st)
+	}
+	if len(free) == 0 {
+		l.setState(StateIdle, "все цели заняты другим клиентом — вероятно, открыты в приложении",
+			time.Time{}, nil)
+		return l.Tick
+	}
+
+	goal := l.pick(free, pol.MaxTurns)
 	l.setState(StateRunning, "", time.Time{}, &goal)
 
 	res, err := RunOnce(ctx, pol, goal, Options{Trace: l.Log, Timeout: 60 * time.Minute})
@@ -207,6 +233,15 @@ func (l *Loop) step(ctx context.Context) time.Duration {
 	l.own[goal.ID] = time.Now()
 
 	switch {
+	case res.Failure == FailBusy:
+		// Not an error worth stopping for: the thread is open somewhere else.
+		// Step aside and let the next goal have the turn immediately.
+		l.blocked[goal.ID] = time.Now().Add(blockedFor)
+		l.currentID, l.streak = "", 0
+		l.logf("цель занята другим клиентом, отложена до %s: %s",
+			time.Now().Add(blockedFor).Format("15:04"), goal.Label())
+		return 0
+
 	case res.Failure == FailOutOfCredits:
 		// Not a wait. No window opens on its own here, so sitting in the loop
 		// would mean sitting forever; a person has to act.
@@ -307,6 +342,12 @@ func (l *Loop) probe(ctx context.Context) error {
 	case res.UsageLimited:
 		// Not a failure: the machinery worked well enough to be told no.
 		l.logf("самопроверка упёрлась в лимит — связка исправна")
+		return nil
+	case res.Failure == FailBusy:
+		// Also not a failure. Being told the thread is taken proves the CLI
+		// ran, authenticated and reached the session store.
+		l.logf("самопроверка: цель открыта в приложении — связка исправна")
+		l.blocked[goal.ID] = time.Now().Add(blockedFor)
 		return nil
 	case res.Lines == 0:
 		return fmt.Errorf("codex не выдал ни строки (код выхода %d); запустите crescent -doctor", res.ExitCode)

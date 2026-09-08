@@ -47,6 +47,11 @@ const (
 	// and a daemon that treats it as a limit would wait for a window that is
 	// never going to open.
 	FailOutOfCredits
+	// FailBusy: another client — the desktop app, almost always — has the
+	// thread open. Codex refuses to resume it, and no amount of waiting for a
+	// quota helps: the right move is to leave this goal alone for a while and
+	// get on with the others.
+	FailBusy
 	// FailOther: some other error; the message is what there is.
 	FailOther
 )
@@ -59,6 +64,11 @@ const (
 func classifyFailure(msg string) Failure {
 	low := strings.ToLower(msg)
 	switch {
+	// Seen in the wild, on stderr rather than in the event stream:
+	//   thread-store conflict: thread <uuid> already has an active writer
+	case strings.Contains(low, "active writer"),
+		strings.Contains(low, "thread-store conflict"):
+		return FailBusy
 	case strings.Contains(low, "out of credits"):
 		return FailOutOfCredits
 	case strings.Contains(low, "hit your usage limit"),

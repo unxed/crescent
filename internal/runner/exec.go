@@ -77,7 +77,16 @@ func RunOnce(ctx context.Context, p Policy, s codex.Session, o Options) (Result,
 	if err != nil {
 		return res, err
 	}
-	cmd.Stderr = os.Stderr
+	// Captured as well as passed through. The reason a resume failed can arrive
+	// here instead of in the event stream — "thread already has an active
+	// writer" does — and a reason thrown at the terminal is a reason crescent
+	// cannot act on.
+	var errBuf boundedBuffer
+	if o.Trace != nil {
+		cmd.Stderr = io.MultiWriter(&errBuf, o.Trace)
+	} else {
+		cmd.Stderr = io.MultiWriter(&errBuf, os.Stderr)
+	}
 
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
@@ -105,7 +114,50 @@ func RunOnce(ctx context.Context, p Policy, s codex.Session, o Options) (Result,
 	} else if waitErr != nil {
 		return res, waitErr
 	}
+
+	// A silent event stream does not mean a silent failure.
+	if msg := errBuf.String(); msg != "" {
+		if res.Failure == FailNone {
+			if f := classifyFailure(msg); f != FailNone {
+				res.Failure = f
+				res.UsageLimited = f == FailUsageLimit
+			}
+		}
+		if len(res.Errors) == 0 && res.ExitCode != 0 {
+			res.Errors = append(res.Errors, oneLine(lastLine(msg), 200))
+		}
+	}
 	return res, nil
+}
+
+// boundedBuffer keeps the tail of what a process wrote to stderr. A failing
+// Codex can be verbose, and the whole point is the last line or two.
+type boundedBuffer struct {
+	buf []byte
+}
+
+const maxStderr = 64 << 10
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	b.buf = append(b.buf, p...)
+	if len(b.buf) > maxStderr {
+		b.buf = b.buf[len(b.buf)-maxStderr:]
+	}
+	return len(p), nil
+}
+
+func (b *boundedBuffer) String() string { return string(b.buf) }
+
+// lastLine returns the final non-empty line, which is where a CLI puts the
+// thing it actually wants you to read.
+func lastLine(s string) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if t := strings.TrimSpace(lines[i]); t != "" {
+			return t
+		}
+	}
+	return ""
 }
 
 // absorb classifies one line of the stream.

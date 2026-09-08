@@ -134,3 +134,26 @@ func TestRawCaptureIsVerbatim(t *testing.T) {
 		t.Errorf("raw capture altered the stream:\n%s", got)
 	}
 }
+
+// Codex reports a refused resume on stderr, not as a JSON event, so a parser
+// watching only stdout sees a silent process exiting non-zero and has nothing
+// to say about why.
+func TestFailureOnStderrIsStillClassified(t *testing.T) {
+	p := mockCodex(t, "", 1)
+	t.Setenv(envMockStderr,
+		"Error: thread/resume failed: thread 01a08208 already has an active writer (code -32600)")
+
+	res, err := RunOnce(context.Background(), p, session(t), Options{Timeout: 20 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Parsed != 0 {
+		t.Fatalf("parsed = %d, want 0: nothing was printed to stdout", res.Parsed)
+	}
+	if res.Failure != FailBusy {
+		t.Errorf("Failure = %v, want FailBusy from stderr", res.Failure)
+	}
+	if len(res.Errors) == 0 || !strings.Contains(res.Errors[0], "active writer") {
+		t.Errorf("the reason was not kept: %v", res.Errors)
+	}
+}

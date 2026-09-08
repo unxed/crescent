@@ -14,8 +14,9 @@ import (
 // as the mock: it re-executes itself, and the environment tells it what to
 // print. That works identically everywhere and costs nothing to build.
 const (
-	envMockFile = "CRESCENT_TEST_MOCK_FILE"
-	envMockExit = "CRESCENT_TEST_MOCK_EXIT"
+	envMockFile   = "CRESCENT_TEST_MOCK_FILE"
+	envMockExit   = "CRESCENT_TEST_MOCK_EXIT"
+	envMockStderr = "CRESCENT_TEST_MOCK_STDERR"
 )
 
 func TestMain(m *testing.M) {
@@ -29,6 +30,9 @@ func TestMain(m *testing.M) {
 			os.Exit(70)
 		}
 		os.Stdout.Write(data)
+		if e := os.Getenv(envMockStderr); e != "" {
+			fmt.Fprintln(os.Stderr, e)
+		}
 		code, _ := strconv.Atoi(os.Getenv(envMockExit))
 		os.Exit(code)
 	}

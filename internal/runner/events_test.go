@@ -75,3 +75,26 @@ func TestParseRetryAtAbsentWhenCodexSaysLater(t *testing.T) {
 		t.Error("a time was invented where the message gives none")
 	}
 }
+
+// Seen on a live machine, and not in the event stream at all — on stderr:
+//
+//	thread-store conflict: thread <uuid> already has an active writer
+//
+// The desktop app keeps a thread locked while it is open. Treating that as a
+// generic failure meant the daemon retried it every tick, forever, and reported
+// "codex printed nothing" as the diagnosis.
+func TestThreadConflictIsItsOwnFailure(t *testing.T) {
+	msgs := []string{
+		"Error: thread/resume: thread/resume failed: thread 01a08208-2013-7922-95c2-34c9cd13f424 already has an active writer (code -32600)",
+		"ERROR codex_core::session: Failed to create session: thread-store conflict: thread 01a0 already has an active writer",
+	}
+	for _, m := range msgs {
+		if got := classifyFailure(m); got != FailBusy {
+			t.Errorf("classifyFailure(%.50q) = %v, want FailBusy", m, got)
+		}
+	}
+	// And it must not be mistaken for the one failure that means "wait".
+	if classifyFailure(msgs[0]) == FailUsageLimit {
+		t.Error("a busy thread was taken for a usage limit")
+	}
+}
