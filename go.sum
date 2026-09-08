@@ -1,7 +1,5 @@
 github.com/go-webgpu/goffi v0.6.2 h1:xuMaUbqsNQ/xiyy5UwAKZb5vQZUDg9QRCrJIpHJaXSE=
 github.com/go-webgpu/goffi v0.6.2/go.mod h1:wfoxNsJkU+5RFbV1kNN1kunhc1lFHuJKK3zpgx08/uM=
-github.com/unxed/goWidgets v0.0.0-20260908043628-e01d842fc395 h1:RkNdL5hmV9mN2INcbv8hOIXLI7eCsU4T4r7fMFMSNdA=
-github.com/unxed/goWidgets v0.0.0-20260908043628-e01d842fc395/go.mod h1:t6QDASpUG2GiiV3zp5Q6f/6WUUjyf0XqG749cTpiM6E=
 github.com/unxed/goWidgets v0.0.0-20260908153618-ea666b9ef48c h1:ey5I8Sf3Zt9zFweq2C2B+IJz0wcBK7d9QAl12mvYQpM=
 github.com/unxed/goWidgets v0.0.0-20260908153618-ea666b9ef48c/go.mod h1:t6QDASpUG2GiiV3zp5Q6f/6WUUjyf0XqG749cTpiM6E=
 github.com/unxed/pureffi v0.1.16 h1:UXwNNCzBCMMoV6TsyQXTeSxEcQ3ZzMSYzE3WppblFLg=
