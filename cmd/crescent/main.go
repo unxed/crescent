@@ -22,6 +22,7 @@ func main() {
 	doctor := flag.Bool("doctor", false, "спросить app-server о лимитах и целях")
 	codexPath := flag.String("codex", "", "путь к codex (иначе ищется автоматически)")
 	verbose := flag.Bool("v", false, "показывать диагностику app-server")
+	raw := flag.Bool("raw", false, "печатать сырые ответы сервера")
 	flag.Parse()
 
 	if !*doctor {
@@ -32,13 +33,13 @@ func main() {
 		fmt.Println("Прежняя, файловая реализация сохранена: go run ./archive/cmd/crescent -run")
 		return
 	}
-	if err := runDoctor(*codexPath, *verbose); err != nil {
+	if err := runDoctor(*codexPath, *verbose, *raw); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func runDoctor(codexPath string, verbose bool) error {
+func runDoctor(codexPath string, verbose, showRaw bool) error {
 	if codexPath != "" {
 		os.Setenv(codexcli.EnvCodex, codexPath)
 	}
@@ -83,7 +84,10 @@ func runDoctor(codexPath string, verbose bool) error {
 	fmt.Println("app-server отвечает, рукопожатие прошло")
 
 	fmt.Println("\nЛимиты аккаунта:")
-	limits, err := client.RateLimits(ctx)
+	limits, rawLimits, err := client.RateLimits(ctx)
+	if showRaw {
+		fmt.Println("   сырой ответ:", short(string(rawLimits), 900))
+	}
 	if err != nil {
 		fmt.Println("   не получены:", err)
 	} else {
@@ -91,24 +95,33 @@ func runDoctor(codexPath string, verbose bool) error {
 		if len(windows) == 0 {
 			fmt.Println("   сервер не назвал ни одного окна")
 		}
-		now := time.Now()
 		for _, w := range windows {
-			line := fmt.Sprintf("   %-10s израсходовано %.0f%%", label(w), w.Percent())
-			if at, ok := w.ResetAt(now); ok {
+			line := fmt.Sprintf("   %-11s израсходовано %.0f%%", w.Label(), w.UsedPercent)
+			if at, ok := w.ResetAt(); ok {
 				line += fmt.Sprintf(", сброс в %s (через %s)",
 					at.Local().Format("15:04"), time.Until(at).Round(time.Minute))
 			}
 			fmt.Println(line)
 		}
-		if limited, at := limits.Exhausted(now); limited {
-			fmt.Printf("   → сейчас работать нельзя, ждать до %s\n", at.Local().Format("15:04"))
+		if limits.OrdinaryUsageAllowed != nil {
+			fmt.Printf("   сервер разрешает обычное использование: %v\n", *limits.OrdinaryUsageAllowed)
+		}
+		if limited, at := limits.Exhausted(); limited {
+			if at.IsZero() {
+				fmt.Println("   → сейчас работать нельзя, время сброса сервер не назвал")
+			} else {
+				fmt.Printf("   → сейчас работать нельзя, ждать до %s\n", at.Local().Format("15:04"))
+			}
 		} else {
 			fmt.Println("   → работать можно")
 		}
 	}
 
 	fmt.Println("\nЦели:")
-	threads, err := client.Threads(ctx)
+	threads, rawThreads, err := client.Threads(ctx)
+	if showRaw {
+		fmt.Println("   сырой ответ:", short(string(rawThreads), 900))
+	}
 	if err != nil {
 		return fmt.Errorf("thread/list: %w", err)
 	}
@@ -116,32 +129,22 @@ func runDoctor(codexPath string, verbose bool) error {
 
 	shown := 0
 	for _, t := range threads {
-		if t.Archived || t.Ident() == "" {
+		if t.ID == "" {
 			continue
 		}
-		goal, err := client.Goal(ctx, t.Ident())
+		goal, err := client.Goal(ctx, t.ID)
 		if err != nil || !goal.Set() {
 			continue
 		}
 		shown++
 		fmt.Printf("\n   • %s\n", orDash(t.Label()))
 		fmt.Printf("     %s  •  %s\n", orDash(goal.Status), orDash(t.Cwd))
-		fmt.Printf("     %s\n", short(goal.Description(), 90))
+		fmt.Printf("     %s\n", short(goal.Objective, 90))
 	}
 	if shown == 0 {
 		fmt.Println("   ни у одного треда нет цели")
 	}
 	return nil
-}
-
-func label(w appserver.RateLimitWindow) string {
-	if w.ShortLabel != "" {
-		return w.ShortLabel
-	}
-	if w.WindowMinutes >= 10000 {
-		return "недельное"
-	}
-	return "5-часовое"
 }
 
 func orDash(s string) string {

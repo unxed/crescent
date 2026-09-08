@@ -3,6 +3,7 @@ package appserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -11,50 +12,54 @@ import (
 // only what crescent needs is named, the rest is ignored — so a server that
 // grows a field does not break a client that does not want it.
 
-// RateLimitWindow is one usage window: the rolling one and the weekly one are
-// reported side by side.
+// Field names come from the published response schemas, which I should have
+// read the first time: RateLimitWindow is {resetsAt, usedPercent,
+// windowDurationMins}, the snapshot wraps {primary, secondary}, and the
+// response wraps that under `rateLimits`. Guessing at the wrapper produced a
+// client that got clean answers and found nothing in them.
 type RateLimitWindow struct {
-	UsedPercent    float64 `json:"used_percent"`
-	WindowMinutes  int64   `json:"window_minutes"`
-	ResetsAt       string  `json:"resets_at"`
-	ResetsInSecs   int64   `json:"resets_in_seconds"`
-	LimitName      string  `json:"limit_name"`
-	ShortLabel     string  `json:"short_label"`
-	ResetsAtCamel  string  `json:"resetsAt"`
-	ResetsInCamel  int64   `json:"resetsInSeconds"`
-	UsedPercentAlt float64 `json:"usedPercent"`
+	ResetsAt           string  `json:"resetsAt"`
+	UsedPercent        float64 `json:"usedPercent"`
+	WindowDurationMins int64   `json:"windowDurationMins"`
 }
 
 // ResetAt returns when this window opens again, if the server said.
-func (w RateLimitWindow) ResetAt(now time.Time) (time.Time, bool) {
-	for _, s := range []string{w.ResetsAt, w.ResetsAtCamel} {
-		if s == "" {
-			continue
-		}
-		if t, err := time.Parse(time.RFC3339, s); err == nil {
-			return t, true
-		}
+func (w RateLimitWindow) ResetAt() (time.Time, bool) {
+	if w.ResetsAt == "" {
+		return time.Time{}, false
 	}
-	for _, secs := range []int64{w.ResetsInSecs, w.ResetsInCamel} {
-		if secs > 0 {
-			return now.Add(time.Duration(secs) * time.Second), true
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if t, err := time.Parse(layout, w.ResetsAt); err == nil {
+			return t, true
 		}
 	}
 	return time.Time{}, false
 }
 
-// Percent returns how much of the window is spent.
-func (w RateLimitWindow) Percent() float64 {
-	if w.UsedPercent > 0 {
-		return w.UsedPercent
+// Label names the window by its length: a five-hour rolling allowance and a
+// weekly one sit side by side, and the duration is what tells them apart.
+func (w RateLimitWindow) Label() string {
+	switch {
+	case w.WindowDurationMins == 0:
+		return "окно"
+	case w.WindowDurationMins >= 7*24*60:
+		return "недельное"
+	case w.WindowDurationMins >= 24*60:
+		return "суточное"
+	default:
+		return fmt.Sprintf("%d-часовое", w.WindowDurationMins/60)
 	}
-	return w.UsedPercentAlt
 }
 
 // RateLimits is the answer to "can we work right now?".
 type RateLimits struct {
 	Primary   *RateLimitWindow `json:"primary"`
 	Secondary *RateLimitWindow `json:"secondary"`
+
+	// OrdinaryUsageAllowed is the backend's own verdict. The schema is explicit
+	// that clients must not infer recovery from percentages or reset times, so
+	// when it is present it wins over any arithmetic of ours.
+	OrdinaryUsageAllowed *bool `json:"-"`
 }
 
 // Windows returns the windows that are present, primary first.
@@ -69,79 +74,77 @@ func (r RateLimits) Windows() []RateLimitWindow {
 	return out
 }
 
-// Exhausted reports whether any window is spent, and when the nearest one
-// reopens. That is the whole question crescent asks before every turn.
-func (r RateLimits) Exhausted(now time.Time) (bool, time.Time) {
+// Exhausted reports whether work is possible now, and when it will be.
+func (r RateLimits) Exhausted() (bool, time.Time) {
+	if r.OrdinaryUsageAllowed != nil && !*r.OrdinaryUsageAllowed {
+		_, at := r.nearestReset()
+		return true, at
+	}
 	var soonest time.Time
 	limited := false
 	for _, w := range r.Windows() {
-		if w.Percent() < 99.5 {
+		if w.UsedPercent < 99.5 {
 			continue
 		}
 		limited = true
-		if at, ok := w.ResetAt(now); ok && (soonest.IsZero() || at.Before(soonest)) {
+		if at, ok := w.ResetAt(); ok && (soonest.IsZero() || at.Before(soonest)) {
 			soonest = at
 		}
 	}
 	return limited, soonest
 }
 
+func (r RateLimits) nearestReset() (bool, time.Time) {
+	var soonest time.Time
+	for _, w := range r.Windows() {
+		if at, ok := w.ResetAt(); ok && (soonest.IsZero() || at.Before(soonest)) {
+			soonest = at
+		}
+	}
+	return !soonest.IsZero(), soonest
+}
+
 // RateLimits asks the server about the account's usage windows.
-func (c *Client) RateLimits(ctx context.Context) (RateLimits, error) {
+func (c *Client) RateLimits(ctx context.Context) (RateLimits, json.RawMessage, error) {
 	raw, err := c.Call(ctx, "account/rateLimits/read", map[string]any{})
 	if err != nil {
-		return RateLimits{}, err
+		return RateLimits{}, raw, err
 	}
-	// The response has grown wrappers before; look for the windows both at the
-	// top level and under a `rateLimits` key.
-	var direct RateLimits
-	if json.Unmarshal(raw, &direct) == nil && (direct.Primary != nil || direct.Secondary != nil) {
-		return direct, nil
+	var resp struct {
+		RateLimits           RateLimits `json:"rateLimits"`
+		OrdinaryUsageAllowed *bool      `json:"ordinaryUsageAllowed"`
 	}
-	var wrapped struct {
-		RateLimits RateLimits `json:"rateLimits"`
-		Snake      RateLimits `json:"rate_limits"`
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return RateLimits{}, raw, err
 	}
-	if json.Unmarshal(raw, &wrapped) == nil {
-		if wrapped.RateLimits.Primary != nil || wrapped.RateLimits.Secondary != nil {
-			return wrapped.RateLimits, nil
-		}
-		return wrapped.Snake, nil
-	}
-	return RateLimits{}, nil
+	limits := resp.RateLimits
+	limits.OrdinaryUsageAllowed = resp.OrdinaryUsageAllowed
+	return limits, raw, nil
 }
 
-// Thread is one conversation as the server describes it.
+// Thread is one conversation, named as the schema names it.
 type Thread struct {
-	ID       string `json:"id"`
-	ThreadID string `json:"threadId"`
-	Name     string `json:"name"`
-	Title    string `json:"title"`
-	Cwd      string `json:"cwd"`
-	Archived bool   `json:"archived"`
-	Updated  string `json:"updatedAt"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Cwd     string `json:"cwd"`
+	Status  string `json:"status"`
+	Preview string `json:"preview"`
+	Updated string `json:"updatedAt"`
 }
 
-// Ident returns whichever identifier the server used.
-func (t Thread) Ident() string {
-	if t.ID != "" {
-		return t.ID
-	}
-	return t.ThreadID
-}
-
-// Label is the name to show a human.
+// Label is the name to show a human, falling back to the preview line.
 func (t Thread) Label() string {
 	if t.Name != "" {
 		return t.Name
 	}
-	return t.Title
+	return t.Preview
 }
 
 // Threads lists conversations. Pagination is followed to the end: a pool that
 // silently stopped at the first page would be a pool of whatever fitted.
-func (c *Client) Threads(ctx context.Context) ([]Thread, error) {
+func (c *Client) Threads(ctx context.Context) ([]Thread, json.RawMessage, error) {
 	var out []Thread
+	var first json.RawMessage
 	cursor := ""
 	for {
 		params := map[string]any{}
@@ -149,46 +152,40 @@ func (c *Client) Threads(ctx context.Context) ([]Thread, error) {
 			params["cursor"] = cursor
 		}
 		raw, err := c.Call(ctx, "thread/list", params)
-		if err != nil {
-			return out, err
+		if first == nil {
+			first = raw
 		}
+		if err != nil {
+			return out, first, err
+		}
+		// The array is `data`. Reading `threads` produced a client that asked
+		// correctly, was answered correctly, and reported nothing.
 		var page struct {
-			Threads    []Thread `json:"threads"`
-			Items      []Thread `json:"items"`
+			Data       []Thread `json:"data"`
 			NextCursor string   `json:"nextCursor"`
 		}
 		if json.Unmarshal(raw, &page) != nil {
-			return out, nil
+			return out, first, nil
 		}
-		batch := page.Threads
-		if len(batch) == 0 {
-			batch = page.Items
-		}
-		out = append(out, batch...)
-		if page.NextCursor == "" || len(batch) == 0 {
-			return out, nil
+		out = append(out, page.Data...)
+		if page.NextCursor == "" || len(page.Data) == 0 {
+			return out, first, nil
 		}
 		cursor = page.NextCursor
 	}
 }
 
-// Goal is a thread's objective, if it has one.
+// Goal is a thread's objective, named as the schema names it.
 type Goal struct {
-	Objective string `json:"objective"`
-	Status    string `json:"status"`
-	Text      string `json:"text"`
+	Objective       string `json:"objective"`
+	Status          string `json:"status"`
+	ThreadID        string `json:"threadId"`
+	TimeUsedSeconds int64  `json:"timeUsedSeconds"`
+	TokensUsed      int64  `json:"tokensUsed"`
 }
 
 // Set reports whether the thread actually carries a goal.
-func (g Goal) Set() bool { return g.Objective != "" || g.Text != "" }
-
-// Description is the goal text, whichever field carried it.
-func (g Goal) Description() string {
-	if g.Objective != "" {
-		return g.Objective
-	}
-	return g.Text
-}
+func (g Goal) Set() bool { return g.Objective != "" }
 
 // Goal asks what a thread is working towards.
 func (c *Client) Goal(ctx context.Context, threadID string) (Goal, error) {
@@ -196,15 +193,13 @@ func (c *Client) Goal(ctx context.Context, threadID string) (Goal, error) {
 	if err != nil {
 		return Goal{}, err
 	}
-	var direct Goal
-	if json.Unmarshal(raw, &direct) == nil && direct.Set() {
-		return direct, nil
-	}
 	var wrapped struct {
-		Goal Goal `json:"goal"`
+		Goal *Goal `json:"goal"`
 	}
-	_ = json.Unmarshal(raw, &wrapped)
-	return wrapped.Goal, nil
+	if err := json.Unmarshal(raw, &wrapped); err != nil || wrapped.Goal == nil {
+		return Goal{}, nil
+	}
+	return *wrapped.Goal, nil
 }
 
 // Resume loads a thread so that turns can be started on it.
