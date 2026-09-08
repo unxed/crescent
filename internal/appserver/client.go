@@ -125,7 +125,36 @@ func Dial(ctx context.Context, o Options) (*Client, error) {
 		_ = c.Close()
 		return nil, fmt.Errorf("рукопожатие не прошло: %w", err)
 	}
+	// The handshake has a second beat: a bare `initialized` notification, no id,
+	// no params. Sending only the request left the server waiting for it, and it
+	// closed the connection cleanly (code 0) — which read as "app-server closed
+	// the stream" the moment the first real call went out.
+	if err := c.Notify("initialized", nil); err != nil {
+		_ = c.Close()
+		return nil, fmt.Errorf("initialized не отправлен: %w", err)
+	}
 	return c, nil
+}
+
+// Notify sends a notification: a message with a method and no id, so the server
+// never replies. Used for the `initialized` half of the handshake.
+func (c *Client) Notify(method string, params any) error {
+	msg := map[string]any{"jsonrpc": "2.0", "method": method}
+	if params != nil {
+		msg["params"] = params
+	}
+	body, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	closed := c.closed
+	c.mu.Unlock()
+	if closed {
+		return c.closeErr
+	}
+	_, err = c.in.Write(append(body, '\n'))
+	return err
 }
 
 func drain(r io.Reader, w io.Writer) {

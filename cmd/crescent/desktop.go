@@ -94,7 +94,7 @@ func runDesktop(codexPath, prompt string, verbose bool) error {
 func (d *desktop) build() error {
 	// Tall enough for the goal list, the log, and every button — the previous
 	// window cut the last button off the bottom.
-	win, err := d.app.NewWindow("crescent", 640, 720)
+	win, err := d.app.NewWindow("crescent", 640, 640)
 	if err != nil {
 		return err
 	}
@@ -110,9 +110,14 @@ func (d *desktop) build() error {
 		goals = nil
 	}
 
+	// The goal list scrolls in its own text view is not the answer here — these
+	// are checkboxes. So the list is capped and, above the cap, folded into a
+	// note; the log stays a fixed-height pane so the window never grows past the
+	// buttons no matter how much happens.
 	shown := goals
-	if len(shown) > 12 {
-		shown = shown[:12]
+	const maxRows = 8
+	if len(shown) > maxRows {
+		shown = shown[:maxRows]
 	}
 	for _, g := range shown {
 		g := g
@@ -135,12 +140,15 @@ func (d *desktop) build() error {
 	}
 	if len(goals) == 0 {
 		_, _ = win.AddLabel("Целей не найдено. Проверьте, что Codex залогинен.")
+	} else if len(goals) > len(shown) {
+		_, _ = win.AddLabel(fmt.Sprintf("…и ещё %d — отметить их можно через crescent -watch",
+			len(goals)-len(shown)))
 	}
 
 	// The log, in the window. This is the whole point of the run: seeing what
 	// the model does while it works unattended.
 	_, _ = win.AddLabel("Журнал:")
-	d.log, _ = win.AddTextView(240)
+	d.log, _ = win.AddTextView(170)
 
 	logBtn, _ := win.AddButton("Открыть папку журналов")
 	logBtn.Clicked.On(d.app.Scope(), func(gw.ClickInfo) { openPath(d.jour.Path()) })

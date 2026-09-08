@@ -41,8 +41,8 @@ trap cleanup EXIT
 
 cd "$root"
 mkdir -p "$tmp/bin"
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o "$tmp/bin/codex.exe" ./ci/mockcodex
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o "$tmp/bin/crescent.exe" ./cmd/crescent
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o "$tmp/bin/codex.exe" ./archive/ci/mockcodex
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o "$tmp/bin/crescent.exe" ./archive/cmd/crescent
 
 # Everything Wine sees lives under Z:, which is the root of the host filesystem.
 winpath() { printf 'Z:%s' "$(echo "$1" | tr '/' '\\')"; }
@@ -72,7 +72,7 @@ run() { "$WINE" "$tmp/bin/crescent.exe" "$@" 2>&1 | grep -v '^wine:' || true; }
 # cheapest place to catch a platform assumption: the same failures the Windows
 # job reports minutes later show up in seconds.
 echo "--- тесты как Windows-бинарники ---"
-for pkg in ./internal/codex ./internal/runner; do
+for pkg in ./archive/internal/codex ./archive/internal/runner; do
     out="$tmp/bin/$(basename "$pkg")_test.exe"
     CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go test -c -o "$out" "$pkg"
     "$WINE" "$out" 2>&1 | grep -v '^wine:' | tail -5
