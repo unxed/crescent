@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/unxed/crescent/internal/codex"
+	"github.com/unxed/crescent/internal/runner"
 	"github.com/unxed/goWidgets"
 	_ "github.com/unxed/goWidgets/backends/gtk"
 	_ "github.com/unxed/goWidgets/backends/headless"
@@ -31,6 +32,8 @@ import (
 func main() {
 	dump := flag.Bool("dump", false, "print what the scanner found and exit")
 	keys := flag.Bool("keys", false, "with -dump: also list JSON key names seen (names only, no values)")
+	doctor := flag.Bool("doctor", false, "check the machine: codex CLI, its flags, Go caches, workspaces")
+	plan := flag.Bool("plan", false, "print what crescent would run, without running anything")
 	flag.Parse()
 
 	dir, err := codex.SessionsDir()
@@ -39,7 +42,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	if *doctor {
+		runDoctor(dir)
+		return
+	}
+
 	sessions, scanErr := codex.Scan(dir)
+	if *plan {
+		if scanErr != nil {
+			fmt.Fprintln(os.Stderr, "не удалось прочитать", dir+":", scanErr)
+			os.Exit(1)
+		}
+		runPlan(sessions)
+		return
+	}
 	if *dump {
 		runDump(dir, sessions, scanErr, *keys)
 		return
@@ -169,6 +185,124 @@ func humanWindow(at time.Time) string {
 	default:
 		return "похоже на недельное окно"
 	}
+}
+
+// runDoctor answers "will this actually work here?" before a single Codex turn
+// is spent on finding out.
+func runDoctor(dir string) {
+	fmt.Println("crescent — проверка окружения")
+	fmt.Println()
+
+	d := runner.Diagnose()
+	fmt.Println("Codex CLI:")
+	if d.CodexPath == "" {
+		fmt.Println("    не найден в PATH")
+	} else {
+		fmt.Printf("    %s\n    версия: %s\n", d.CodexPath, orDash(d.CodexVersion))
+		fmt.Printf("    exec: %v, exec resume: %v, --json: %v\n", d.HasExec, d.HasResume, d.HasJSON)
+	}
+
+	fmt.Println()
+	fmt.Println("Каталоги, которым нужен доступ на запись вне песочницы:")
+	for _, r := range runner.GoCaches() {
+		mark := "нет"
+		if fi, err := os.Stat(r); err == nil && fi.IsDir() {
+			mark = "есть"
+		}
+		fmt.Printf("    %-40s %s\n", r, mark)
+	}
+
+	fmt.Println()
+	fmt.Println("Рабочие каталоги целей:")
+	sessions, err := codex.Scan(dir)
+	if err != nil {
+		fmt.Println("    каталог сессий не прочитан:", err)
+	} else {
+		for _, s := range sessions {
+			if !s.HasGoal() {
+				continue
+			}
+			mark := "НЕТ"
+			if fi, err := os.Stat(s.Cwd); err == nil && fi.IsDir() {
+				mark = "есть"
+			}
+			fmt.Printf("    %-4s %s\n", mark, orDash(s.Cwd))
+		}
+	}
+
+	if len(d.Problems) > 0 {
+		fmt.Println()
+		fmt.Println("Проблемы:")
+		for _, p := range d.Problems {
+			fmt.Println("    •", p)
+		}
+	}
+}
+
+// runPlan prints the decision without acting on it. Everything crescent would
+// do unattended is visible here first.
+func runPlan(sessions []codex.Session) {
+	pol := runner.DefaultPolicy()
+	pl := runner.Build(sessions, pol, time.Now())
+
+	fmt.Println("crescent — план (ничего не запускается)")
+	fmt.Println()
+
+	switch {
+	case pl.Interrupt:
+		fmt.Printf("СТОП: в каталоге сессий только что была запись (тише %s назад).\n",
+			pol.QuietPeriod)
+		fmt.Println("Похоже, вы работаете в Codex сами — crescent в это не вмешивается.")
+	case pl.Limited:
+		fmt.Printf("Лимит закрыт до %s (через %s) — очередь ждёт.\n",
+			pl.StartAt.Local().Format("2006-01-02 15:04"),
+			time.Until(pl.StartAt).Round(time.Minute))
+	default:
+		fmt.Println("Лимит открыт, очередь может идти сейчас.")
+	}
+
+	fmt.Printf("\nОчередь (последовательно, по одной цели за раз):\n")
+	n := 0
+	for _, st := range pl.Steps {
+		if st.Skip != "" {
+			continue
+		}
+		n++
+		fmt.Printf("\n%d. %s\n", n, st.Session.Title())
+		fmt.Printf("   %s\n", shellLine(st.Args))
+	}
+	if n == 0 {
+		fmt.Println("   пусто")
+	}
+
+	fmt.Printf("\nПропущено:\n")
+	skipped := 0
+	for _, st := range pl.Steps {
+		if st.Skip == "" {
+			continue
+		}
+		skipped++
+		fmt.Printf("   %s — %s\n", st.Session.Title(), st.Skip)
+	}
+	if skipped == 0 {
+		fmt.Println("   ничего")
+	}
+}
+
+// shellLine renders argv so it can be pasted into a terminal as-is. The prompt
+// contains spaces, so an unquoted join would print a command that means
+// something different from the one crescent would run.
+func shellLine(args []string) string {
+	quoted := make([]string, 0, len(args)+1)
+	quoted = append(quoted, "codex")
+	for _, a := range args {
+		if a == "" || strings.ContainsAny(a, " \t\n\"'\\$`*?[]{}()<>|&;#~") {
+			quoted = append(quoted, "'"+strings.ReplaceAll(a, "'", `'\''`)+"'")
+			continue
+		}
+		quoted = append(quoted, a)
+	}
+	return strings.Join(quoted, " ")
 }
 
 func orDash(s string) string {
