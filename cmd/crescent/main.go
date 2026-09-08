@@ -21,6 +21,8 @@ import (
 	"strings"
 	"time"
 
+	"context"
+
 	"github.com/unxed/crescent/internal/codex"
 	"github.com/unxed/crescent/internal/runner"
 	"github.com/unxed/goWidgets"
@@ -35,6 +37,10 @@ func main() {
 	doctor := flag.Bool("doctor", false, "check the machine: codex CLI, its flags, Go caches, workspaces")
 	plan := flag.Bool("plan", false, "print what crescent would run, without running anything")
 	codexPath := flag.String("codex", "", "path to the codex binary (overrides the search and "+runner.EnvCodex+")")
+	runOnce := flag.String("run-once", "", "resume exactly one turn of the session with this id, then stop")
+	readOnly := flag.Bool("read-only", false, "with -run-once: force --sandbox read-only (recommended for the first run)")
+	rawTo := flag.String("raw", "", "with -run-once: write the raw --json stream to this file")
+	prompt := flag.String("prompt", "", "message used to wake the session")
 	flag.Parse()
 
 	if *codexPath != "" {
@@ -53,6 +59,19 @@ func main() {
 	}
 
 	sessions, scanErr := codex.Scan(dir)
+
+	if *runOnce != "" {
+		if scanErr != nil {
+			fmt.Fprintln(os.Stderr, "не удалось прочитать", dir+":", scanErr)
+			os.Exit(1)
+		}
+		if err := doRunOnce(sessions, *runOnce, *readOnly, *rawTo, *prompt); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if *plan {
 		if scanErr != nil {
 			fmt.Fprintln(os.Stderr, "не удалось прочитать", dir+":", scanErr)
@@ -308,6 +327,82 @@ func runPlan(sessions []codex.Session) {
 	if skipped == 0 {
 		fmt.Println("   ничего")
 	}
+}
+
+// doRunOnce resumes one named session for a single turn and reports what
+// happened. It is deliberately a separate mode from the queue: before anything
+// runs unattended, one turn should be watched by a human.
+func doRunOnce(sessions []codex.Session, id string, readOnly bool, rawPath, prompt string) error {
+	var target *codex.Session
+	for i := range sessions {
+		if sessions[i].ID == id {
+			target = &sessions[i]
+			break
+		}
+	}
+	if target == nil {
+		return fmt.Errorf("сессия %s не найдена; список: crescent -dump", id)
+	}
+
+	pol := runner.DefaultPolicy()
+	if prompt != "" {
+		pol.Prompt = prompt
+	}
+	if pol.CodexPath == "codex" {
+		return fmt.Errorf("codex не найден; запустите crescent -doctor")
+	}
+
+	opts := runner.Options{ReadOnly: readOnly, Trace: os.Stdout, Timeout: 30 * time.Minute}
+	if rawPath != "" {
+		f, err := os.Create(rawPath)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		opts.RawTo = f
+	}
+
+	fmt.Printf("Цель:    %s\n", target.Title())
+	fmt.Printf("Каталог: %s\n", target.Cwd)
+	if readOnly {
+		fmt.Println("Песочница: read-only — запись невозможна, это проверка связки.")
+	} else {
+		fmt.Printf("Песочница: %s + кэши Go\n", pol.Sandbox)
+	}
+	fmt.Println("\nСобытия:")
+
+	res, err := runner.RunOnce(context.Background(), pol, *target, opts)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("\nИтог за %s: код выхода %d, строк %d (разобрано %d)\n",
+		res.Duration.Round(time.Second), res.ExitCode, res.Lines, res.Parsed)
+	if len(res.EventTypes) > 0 {
+		fmt.Println("Типы событий:")
+		for k, n := range res.EventTypes {
+			fmt.Printf("    %-32s %d\n", k, n)
+		}
+	}
+	if res.UsageLimited {
+		fmt.Println("УПЁРЛИСЬ В ЛИМИТ — ровно тот случай, ради которого всё затевалось.")
+		if !res.ResetsAt.IsZero() {
+			fmt.Printf("    сброс в %s (через %s)\n",
+				res.ResetsAt.Local().Format("2006-01-02 15:04"),
+				time.Until(res.ResetsAt).Round(time.Minute))
+		}
+	}
+	for _, e := range res.Errors {
+		fmt.Println("Ошибка:", e)
+	}
+	if res.LastMessage != "" {
+		fmt.Printf("\nПоследнее сообщение:\n    %s\n", truncate(res.LastMessage, 400))
+	}
+	if res.Parsed == 0 && res.Lines > 0 {
+		fmt.Println("\nНи одна строка не разобралась как JSON. Сохраните поток")
+		fmt.Println("через -raw и пришлите — формат событий поменялся.")
+	}
+	return nil
 }
 
 // shellLine renders argv so it can be pasted into a terminal as-is. The prompt

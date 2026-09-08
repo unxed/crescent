@@ -343,6 +343,16 @@ func normalizePath(s string) string {
 	return s
 }
 
+// Walk visits every key/value pair in a decoded JSON document. Exported because
+// the same schema-tolerant approach is needed for the codex --json event
+// stream, which is as undocumented as the rollout format.
+func Walk(v any, fn func(key string, val any)) { walk(v, fn) }
+
+// ParseTime accepts what a timestamp field has been seen to hold: an RFC3339
+// string, or a number of seconds, milliseconds, microseconds or nanoseconds
+// since the epoch.
+func ParseTime(v any) (time.Time, bool) { return parseTime(v) }
+
 // walk visits every key/value pair in a decoded JSON document.
 func walk(v any, fn func(key string, val any)) {
 	switch t := v.(type) {
