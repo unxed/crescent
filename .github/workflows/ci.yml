@@ -38,6 +38,16 @@ jobs:
       - name: Daemon rehearsal against a mock codex
         run: ./ci/rehearsal.sh
 
+      # The same rehearsal, but running the Windows build under Wine. The
+      # Windows job below is the real check; this one runs alongside the Linux
+      # tests and catches platform mistakes — a path joined with the wrong
+      # separator, say — before the slower job even starts.
+      - name: Install Wine
+        run: sudo apt-get install -y --no-install-recommends wine64
+
+      - name: Windows build rehearsed under Wine
+        run: ./ci/rehearsal-wine.sh
+
       - name: Cross-compile
         run: |
           set -e

@@ -3,6 +3,7 @@ package runner
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -261,5 +262,48 @@ func TestNewestMatchPrefersLaterVersions(t *testing.T) {
 	}
 	if !strings.Contains(got[0], "0.153.0") {
 		t.Errorf("first match = %s, want the newest version", got[0])
+	}
+}
+
+// Running the Windows build under Wine showed the cache paths coming out as
+// "C:\users\me/.cache/go-build": joined with the wrong separator and following
+// the Unix layout. Neither is a path Windows would accept.
+func TestDefaultGoCachesFollowThePlatform(t *testing.T) {
+	t.Setenv("GOMODCACHE", "")
+	t.Setenv("GOCACHE", "")
+
+	got := defaultGoCaches()
+	if len(got) != 2 {
+		t.Fatalf("got %v, want a module cache and a build cache", got)
+	}
+	for _, p := range got {
+		if !filepath.IsAbs(p) {
+			t.Errorf("%q is not absolute", p)
+		}
+		// filepath.Join is what keeps this true on every platform; string
+		// concatenation is what broke it.
+		if p != filepath.Clean(p) {
+			t.Errorf("%q is not a clean path", p)
+		}
+		if runtime.GOOS == "windows" && strings.Contains(p, "/") {
+			t.Errorf("%q mixes separators on Windows", p)
+		}
+	}
+	if runtime.GOOS == "windows" && strings.Contains(got[1], ".cache") {
+		t.Errorf("build cache %q uses the Unix location", got[1])
+	}
+}
+
+// The environment wins when it is set: a developer who moved their caches must
+// not have them silently ignored.
+func TestGoCachesPrefersTheEnvironment(t *testing.T) {
+	mod := filepath.Join(t.TempDir(), "mod")
+	build := filepath.Join(t.TempDir(), "build")
+	t.Setenv("GOMODCACHE", mod)
+	t.Setenv("GOCACHE", build)
+
+	got := GoCaches()
+	if len(got) != 2 || got[0] != mod || got[1] != build {
+		t.Errorf("got %v, want [%s %s]", got, mod, build)
 	}
 }

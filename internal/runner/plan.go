@@ -4,8 +4,12 @@
 package runner
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -61,19 +65,70 @@ func DefaultPolicy() Policy {
 
 // GoCaches reports the Go module and build caches, which live outside any
 // workspace and must stay writable for a build to work at all.
+//
+// Asked of the Go toolchain rather than guessed. The guess was wrong on
+// Windows in two ways at once — it joined paths with forward slashes and used
+// the Unix layout, producing "C:\\users\\me/.cache/go-build", which is neither
+// a real path nor where Windows keeps the build cache. Running under Wine is
+// what showed it.
 func GoCaches() []string {
-	var out []string
-	for _, v := range []string{os.Getenv("GOMODCACHE"), os.Getenv("GOCACHE")} {
-		if v != "" {
-			out = append(out, v)
+	if v := os.Getenv("GOMODCACHE"); v != "" {
+		if b := os.Getenv("GOCACHE"); b != "" {
+			return []string{v, b}
 		}
 	}
-	if len(out) == 0 {
-		if home, err := os.UserHomeDir(); err == nil {
-			out = append(out, home+"/go/pkg/mod", home+"/.cache/go-build")
+	if out, err := goEnv("GOMODCACHE", "GOCACHE"); err == nil && len(out) > 0 {
+		return out
+	}
+	return defaultGoCaches()
+}
+
+// goEnv asks the toolchain where its caches are. This is authoritative on every
+// platform and costs one process.
+func goEnv(vars ...string) ([]string, error) {
+	bin, err := exec.LookPath("go")
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, bin, append([]string{"env"}, vars...)...).Output()
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if p := strings.TrimSpace(line); p != "" {
+			paths = append(paths, p)
 		}
 	}
-	return out
+	return paths, nil
+}
+
+// defaultGoCaches is the last resort, following each platform's own layout
+// instead of one platform's.
+func defaultGoCaches() []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	modCache := filepath.Join(home, "go", "pkg", "mod")
+
+	if runtime.GOOS == "windows" {
+		// The build cache lives under LOCALAPPDATA here, not under a dot
+		// directory in the home folder.
+		base := os.Getenv("LOCALAPPDATA")
+		if base == "" {
+			base = filepath.Join(home, "AppData", "Local")
+		}
+		return []string{modCache, filepath.Join(base, "go-build")}
+	}
+	cache := os.Getenv("XDG_CACHE_HOME")
+	if cache == "" {
+		cache = filepath.Join(home, ".cache")
+	}
+	return []string{modCache, filepath.Join(cache, "go-build")}
 }
 
 // SkipReason explains why a session is not in the queue. Empty means it is.
