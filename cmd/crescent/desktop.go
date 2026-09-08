@@ -19,21 +19,23 @@ import (
 	"github.com/unxed/crescent/internal/supervisor"
 )
 
-// desktop is the whole application with a face: tick the goals to keep alive,
-// watch what they do in the log below, close the window and it lives in the
-// tray while the work goes on.
+// desktop is crescent with a face. The design target is a tired person at four
+// in the morning: one glance at the traffic light says whether anything is
+// happening, and the goals are checkboxes with nothing hidden behind a flag.
 type desktop struct {
 	app  *gw.App
 	sup  *supervisor.Supervisor
 	pins *pins.Pins
 	jour *journal.Journal
 
-	win     *gw.Window
-	status  *gw.Label
-	counts  *gw.Label
-	log     *gw.TextView
-	tray    *gw.TrayIcon
-	hasTray bool
+	win      *gw.Window
+	lamp     *gw.Label
+	detail   *gw.Label
+	counts   *gw.Label
+	pauseBtn *gw.Button
+	log      *gw.TextView
+	tray     *gw.TrayIcon
+	hasTray  bool
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
@@ -79,9 +81,6 @@ func runDesktop(codexPath, prompt string, verbose bool) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	d.cancel = cancel
 	go func() { _ = d.sup.Run(ctx) }()
-
-	// The log is a file the supervisor and the activity sink write to; poll it
-	// a couple of times a second so the window shows what is happening live.
 	go d.pollLog()
 
 	err = app.Run(d.win)
@@ -92,16 +91,19 @@ func runDesktop(codexPath, prompt string, verbose bool) error {
 }
 
 func (d *desktop) build() error {
-	// Tall enough for the goal list, the log, and every button — the previous
-	// window cut the last button off the bottom.
-	win, err := d.app.NewWindow("crescent", 640, 640)
+	win, err := d.app.NewWindow("crescent", 660, 700)
 	if err != nil {
 		return err
 	}
 	d.win = win
 
-	d.status, _ = win.AddLabel("")
+	// The traffic light first, on its own line, in its own words. The previous
+	// window put the state in ordinary text right above the checkboxes, where
+	// it read as another list item and could not be found at a glance.
+	d.lamp, _ = win.AddLabel("")
+	d.detail, _ = win.AddLabel("")
 	d.counts, _ = win.AddLabel("")
+	_, _ = win.AddLabel("────────────────────────────────────────────")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -110,25 +112,21 @@ func (d *desktop) build() error {
 		goals = nil
 	}
 
-	// The goal list scrolls in its own text view is not the answer here — these
-	// are checkboxes. So the list is capped and, above the cap, folded into a
-	// note; the log stays a fixed-height pane so the window never grows past the
-	// buttons no matter how much happens.
-	shown := goals
-	const maxRows = 8
-	if len(shown) > maxRows {
-		shown = shown[:maxRows]
-	}
-	for _, g := range shown {
+	// Every goal gets a row. Hiding some behind "and N more, use another
+	// command" put the goals this exists for out of reach; duplicates are gone
+	// now, so the list is short enough to show whole.
+	for _, g := range goals {
 		g := g
-		box, err := win.AddCheckBox(fmt.Sprintf("%s  [%s]", g.Label, g.Status), d.pins.Pinned(g.ThreadID))
+		label := g.Label
+		if g.Status != "" {
+			label += "  [" + g.Status + "]"
+		}
+		box, err := win.AddCheckBox(label, d.pins.Pinned(g.ThreadID))
 		if err != nil {
 			return err
 		}
 		box.Toggled.On(d.app.Scope(), func(on bool) {
 			d.pins.Set(g.ThreadID, g.Label, on)
-			// Immediate feedback: say what happened, and wake the supervisor so
-			// the effect is not up to a poll interval away.
 			verb := "снята с наблюдения"
 			if on {
 				verb = "закреплена — будет перезапускаться после сброса лимита"
@@ -140,15 +138,22 @@ func (d *desktop) build() error {
 	}
 	if len(goals) == 0 {
 		_, _ = win.AddLabel("Целей не найдено. Проверьте, что Codex залогинен.")
-	} else if len(goals) > len(shown) {
-		_, _ = win.AddLabel(fmt.Sprintf("…и ещё %d — отметить их можно через crescent -watch",
-			len(goals)-len(shown)))
 	}
 
-	// The log, in the window. This is the whole point of the run: seeing what
-	// the model does while it works unattended.
 	_, _ = win.AddLabel("Журнал:")
-	d.log, _ = win.AddTextView(170)
+	d.log, _ = win.AddTextView(150)
+
+	d.pauseBtn, _ = win.AddButton("Пауза")
+	d.pauseBtn.Clicked.On(d.app.Scope(), func(gw.ClickInfo) {
+		paused := !d.sup.Paused()
+		d.sup.SetPaused(paused)
+		if paused {
+			d.jour.Note("", "пауза — перезапуски остановлены")
+		} else {
+			d.jour.Note("", "продолжаем")
+		}
+		d.render(d.sup.Status())
+	})
 
 	logBtn, _ := win.AddButton("Открыть папку журналов")
 	logBtn.Clicked.On(d.app.Scope(), func(gw.ClickInfo) { openPath(d.jour.Path()) })
@@ -159,10 +164,12 @@ func (d *desktop) build() error {
 	quitBtn, _ := win.AddButton("Выйти (остановить наблюдение)")
 	quitBtn.Clicked.On(d.app.Scope(), func(gw.ClickInfo) { d.quit() })
 
+	// Breathing room under the last button: it sat flush against the window
+	// edge and looked cut off.
+	_, _ = win.AddLabel(" ")
+
 	d.buildTray()
 
-	// The close button hides to the tray, so a stray click never loses the run.
-	// Only without a tray does closing quit, since then there is no way back.
 	win.Closing.On(d.app.Scope(), func(req *gw.CloseRequest) {
 		if d.hasTray {
 			req.CancelClose()
@@ -193,14 +200,21 @@ func (d *desktop) buildTray() {
 	tray.Activated.On(d.app.Scope(), func(struct{}) { d.win.Show() })
 }
 
-// render reflects a status snapshot into the window and the tray tooltip.
 func (d *desktop) render(s supervisor.Status) {
-	line := s.Line()
-	d.status.Text.Set("Состояние: " + line)
-	d.counts.Text.Set(fmt.Sprintf("Закреплено целей: %d  •  перезапусков: %d",
+	lamp := s.Lamp()
+	d.lamp.Text.Set(lamp.Symbol() + "   " + lamp.Word())
+	d.detail.Text.Set(s.Line())
+	d.counts.Text.Set(fmt.Sprintf("Отмечено целей: %d   •   перезапусков: %d",
 		d.pins.Count(), s.Restarts))
+	if d.pauseBtn != nil {
+		if d.sup.Paused() {
+			d.pauseBtn.Text.Set("Продолжить")
+		} else {
+			d.pauseBtn.Text.Set("Пауза")
+		}
+	}
 	if d.hasTray {
-		d.tray.Tooltip.Set("crescent — " + line)
+		d.tray.Tooltip.Set("crescent " + lamp.Symbol() + " " + s.Line())
 	}
 }
 

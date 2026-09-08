@@ -24,7 +24,66 @@ const (
 	StateLimited    State = "жду сброса лимита"
 	StateWorking    State = "веду цели"
 	StateNoGoals    State = "нет закреплённых целей"
+	StatePaused     State = "на паузе"
+	// StateUnknownLimit is not the same as waiting for a reset: we do not know
+	// whether work is possible, usually because the limits request could not
+	// reach the backend. Saying "waiting for the reset" there was a lie.
+	StateUnknownLimit State = "не удалось узнать лимит"
 )
+
+// Lamp is the traffic light: the one thing a tired person should be able to
+// read across the room without parsing a sentence.
+type Lamp uint8
+
+// Lamp values.
+const (
+	LampRed    Lamp = iota // stopped: nothing will happen until you act
+	LampYellow             // waiting: on the limit, on the app, on the network
+	LampGreen              // working
+)
+
+// Symbol renders the lamp. Coloured circles, because the toolkit's labels carry
+// no colour of their own and this reads correctly everywhere.
+func (l Lamp) Symbol() string {
+	switch l {
+	case LampGreen:
+		return "🟢"
+	case LampYellow:
+		return "🟡"
+	default:
+		return "🔴"
+	}
+}
+
+// Word is the state in one shouted word, next to the lamp.
+func (l Lamp) Word() string {
+	switch l {
+	case LampGreen:
+		return "РАБОТАЕТ"
+	case LampYellow:
+		return "ЖДЁТ"
+	default:
+		return "СТОИТ"
+	}
+}
+
+// Lamp maps a status to the traffic light.
+func (s Status) Lamp() Lamp {
+	switch s.State {
+	case StateWorking:
+		return LampGreen
+	case StateLimited, StateWaitingApp, StateUnknownLimit:
+		return LampYellow
+	default:
+		return LampRed
+	}
+}
+
+// Headline is the whole state in one line: lamp, word, and why.
+func (s Status) Headline() string {
+	l := s.Lamp()
+	return l.Symbol() + "  " + l.Word() + " — " + s.Line()
+}
 
 // Status is a snapshot for whoever is watching — a window, a tray, a terminal.
 type Status struct {
@@ -41,8 +100,21 @@ func (s Status) Line() string {
 	switch s.State {
 	case StateLimited:
 		if !s.Until.IsZero() {
-			return fmt.Sprintf("жду сброса лимита до %s", s.Until.Local().Format("15:04"))
+			return fmt.Sprintf("лимит аккаунта исчерпан, сброс в %s",
+				s.Until.Local().Format("15:04"))
 		}
+		return "лимит аккаунта исчерпан, время сброса сервер не назвал"
+	case StateUnknownLimit:
+		return "не удаётся спросить лимит у Codex — проверьте сеть; пробую снова"
+	case StatePaused:
+		return "пауза — цели не перезапускаются, пока не нажмёте «Продолжить»"
+	case StateNoGoals:
+		return "ни одна цель не отмечена галочкой"
+	case StateWaitingApp:
+		if s.Message != "" {
+			return s.Message
+		}
+		return "ждёт, пока вы закроете приложение ChatGPT"
 	case StateWorking:
 		return fmt.Sprintf("веду %d целей", s.Pinned)
 	}
@@ -66,6 +138,7 @@ type Supervisor struct {
 	started  map[string]time.Time // last time we pushed each goal
 	onChange func(Status)
 	wake     chan struct{}
+	paused   bool
 }
 
 // Options configure a supervisor.
@@ -101,6 +174,22 @@ func New(o Options) *Supervisor {
 		wake:     make(chan struct{}, 1),
 		status:   Status{State: StateIdle, Since: time.Now()},
 	}
+}
+
+// SetPaused stops or resumes the loop without tearing it down, so the pinned
+// set and the connection survive a pause.
+func (s *Supervisor) SetPaused(p bool) {
+	s.mu.Lock()
+	s.paused = p
+	s.mu.Unlock()
+	s.Wake()
+}
+
+// Paused reports whether the loop is standing down by request.
+func (s *Supervisor) Paused() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.paused
 }
 
 // Wake makes the loop take a pass immediately instead of waiting out the poll
@@ -153,6 +242,14 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			return nil
 		}
 
+		if s.Paused() {
+			s.set(StatePaused, "", time.Time{})
+			if !s.sleep(ctx) {
+				return nil
+			}
+			continue
+		}
+
 		if s.pins.Count() == 0 {
 			s.set(StateNoGoals, "", time.Time{})
 			if !s.sleep(ctx) {
@@ -167,8 +264,9 @@ func (s *Supervisor) Run(ctx context.Context) error {
 
 		limits, err := s.client.RateLimitsWithRetry(ctx, 3)
 		if err != nil {
-			// Unknown is not permission.
-			s.set(StateLimited, "состояние лимита не выяснено", time.Time{})
+			// Unknown is not permission — but it is also not a reset to wait
+			// for, and saying so was misleading.
+			s.set(StateUnknownLimit, "", time.Time{})
 			if !s.sleep(ctx) {
 				return nil
 			}
@@ -276,6 +374,7 @@ type GoalView struct {
 	Label    string
 	Status   string
 	Cwd      string
+	Updated  int64
 }
 
 // Goals returns everything the server offers, marked with whether it is pinned,
@@ -285,15 +384,37 @@ func (s *Supervisor) Goals(ctx context.Context) ([]GoalView, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := make([]GoalView, 0, len(cands))
+	// Forked threads keep the name and the objective of the thread they came
+	// from, so the same goal shows up several times — "f4 SDL в Alpine" four
+	// times over. Only the freshest of each group can be driven usefully, and
+	// showing the rest is a list the user has to disambiguate for no reason.
+	best := map[string]appserver.Candidate{}
+	var order []string
 	for _, c := range cands {
+		key := c.Thread.Label() + "\x00" + c.Goal.Objective
+		prev, seen := best[key]
+		if !seen {
+			order = append(order, key)
+			best[key] = c
+			continue
+		}
+		if c.Thread.Updated > prev.Thread.Updated {
+			best[key] = c
+		}
+	}
+
+	out := make([]GoalView, 0, len(order))
+	for _, key := range order {
+		c := best[key]
 		out = append(out, GoalView{
 			ThreadID: c.Thread.ID,
 			Label:    c.Thread.Label(),
 			Status:   c.Goal.Status,
 			Cwd:      c.Thread.Cwd,
+			Updated:  c.Thread.Updated,
 		})
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Label < out[j].Label })
+	// Freshest first: what was touched last is what the user is thinking about.
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Updated > out[j].Updated })
 	return out, nil
 }

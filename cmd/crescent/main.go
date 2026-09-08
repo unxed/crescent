@@ -12,11 +12,13 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/unxed/crescent/internal/appserver"
 	"github.com/unxed/crescent/internal/codexcli"
+	"github.com/unxed/crescent/internal/journal"
 )
 
 func main() {
@@ -25,13 +27,25 @@ func main() {
 	verbose := flag.Bool("v", false, "показывать диагностику app-server")
 	raw := flag.Bool("raw", false, "печатать сырые ответы сервера")
 	restart := flag.Bool("restart", false, "перезапустить остановленные цели, если лимит позволяет")
-	gui := flag.Bool("gui", false, "окно: отметить цели галочками и вести их в фоне")
+	gui := flag.Bool("gui", false, "окно (режим по умолчанию)")
+	noGui := flag.Bool("no-gui", false, "не открывать окно, показать краткую справку")
+	foreground := flag.Bool("foreground", false, "с окном: не отцепляться от терминала")
 	watch := flag.String("watch", "", "вести названные цели в терминале (через запятую; пусто — все закреплённые)")
 	dry := flag.Bool("dry-run", false, "с -restart: показать, что было бы сделано, и не делать")
 	prompt := flag.String("prompt", "Продолжай работу над текущей целью.", "чем будить цель")
 	flag.Parse()
 
-	if *gui {
+	// The window is what this is for, so it is what you get by default: a bare
+	// `crescent` opens it. The other modes stay behind their flags.
+	wantGUI := *gui || (!*doctor && !*restart && !*noGui && *watch == "" && !hasFlag("watch"))
+
+	if wantGUI {
+		if !*foreground {
+			if p, err := detachedOutputPath(); err == nil && detachFromConsole(p) {
+				fmt.Println("crescent запущен в фоне; журнал:", p)
+				return
+			}
+		}
 		if err := runDesktop(*codexPath, *prompt, *verbose); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -198,6 +212,19 @@ func runDoctor(codexPath string, verbose, showRaw bool) error {
 		fmt.Println("\n   ни у одного треда нет цели")
 	}
 	return nil
+}
+
+// envDetached marks the re-executed child so it does not detach again.
+const envDetached = "CRESCENT_DETACHED"
+
+// detachedOutputPath is where a detached window sends whatever it prints, so
+// nothing is lost just because the terminal was let go.
+func detachedOutputPath() (string, error) {
+	dir, err := journal.Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "crescent.out"), nil
 }
 
 func hasFlag(name string) bool {
