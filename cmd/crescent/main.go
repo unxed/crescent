@@ -25,10 +25,6 @@ import (
 
 	"github.com/unxed/crescent/internal/codex"
 	"github.com/unxed/crescent/internal/runner"
-	"github.com/unxed/goWidgets"
-	_ "github.com/unxed/goWidgets/backends/gtk"
-	_ "github.com/unxed/goWidgets/backends/headless"
-	_ "github.com/unxed/goWidgets/backends/win32"
 )
 
 func main() {
@@ -43,14 +39,14 @@ func main() {
 	rawTo := flag.String("raw", "", "with -run-once: write the raw --json stream to this file")
 	prompt := flag.String("prompt", "", "message used to wake the session")
 	yes := flag.Bool("yes", false, "with -run-once: take the offered goal without asking")
-	gui := flag.Bool("gui", false, "open the window (it is still a viewer: nothing can be started from it)")
+	gui := flag.Bool("gui", false, "open the window: goals, live state, start and pause")
 	find := flag.String("find", "", "find which JSON key holds this text (e.g. a chat name you can see in the app)")
 	deep := flag.Bool("deep", false, "with -find: search the whole Codex directory, not only sessions")
 	refresh := flag.Bool("refresh", false, "forget the scan cache and read every rollout again")
 	run := flag.Bool("run", false, "background mode: push goals forward, waiting out usage limits")
 	noProbe := flag.Bool("no-probe", false, "with -run: skip the read-only self-check")
 	status := flag.Bool("status", false, "print what a running background process is doing")
-	tray := flag.Bool("tray", false, "run in the status area: icon plus background work, no console")
+	tray := flag.Bool("tray", false, "same as -gui but starting hidden in the status area")
 	flag.Parse()
 
 	// Go's flag package stops parsing at the first positional argument, so
@@ -108,8 +104,8 @@ func main() {
 		return
 	}
 
-	if *tray {
-		if err := runTray(dir, *readOnly, *noProbe, *prompt); err != nil {
+	if *tray || *gui {
+		if err := runDesktop(dir, *readOnly, *noProbe, *prompt, *gui); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -132,18 +128,6 @@ func main() {
 			}
 		}
 		if err := runFind(root, *find); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		return
-	}
-
-	if *gui {
-		if scanErr != nil {
-			fmt.Fprintln(os.Stderr, "не удалось прочитать", dir+":", scanErr)
-			os.Exit(1)
-		}
-		if err := runGUI(dir, sessions); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -195,10 +179,11 @@ func main() {
 		fmt.Println("    crescent -run-once -read-only 2    сразу нужную")
 	}
 	fmt.Println("Гнать цели в фоне, пока не кончатся:")
-	fmt.Println("    crescent -tray                     иконка в трее, работа за ней")
+	fmt.Println("    crescent -gui                      окно: цели, состояние, пуск и пауза")
+	fmt.Println("    crescent -tray                     то же, но сразу в трей")
 	fmt.Println("    crescent -run                      то же в терминале")
 	fmt.Println("    crescent -status                   что он делает прямо сейчас")
-	fmt.Println("Ещё:  -plan (очередь)   -doctor (окружение)   -dump (подробно)   -gui (окно)")
+	fmt.Println("Ещё:  -plan (очередь)   -doctor (окружение)   -dump (подробно)")
 }
 
 // runDump is the feedback loop for the one thing that cannot be verified
@@ -589,83 +574,4 @@ func orDash(s string) string {
 		return "—"
 	}
 	return s
-}
-
-func runGUI(dir string, sessions []codex.Session) error {
-	app, err := goWidgets.NewApp()
-	if err != nil {
-		return fmt.Errorf("не удалось открыть окно: %w", err)
-	}
-
-	win, err := app.NewWindow("crescent", 620, 420)
-	if err != nil {
-		return err
-	}
-
-	status, _ := win.AddLabel("")
-
-	// Only goal sessions are actionable; the rest would be noise.
-	var goals []codex.Session
-	for _, s := range sessions {
-		if s.HasGoal() && s.Status.Resumable() {
-			goals = append(goals, s)
-		}
-	}
-	if len(goals) > 12 {
-		goals = goals[:12] // until there is a real ListView
-	}
-
-	boxes := make([]*goWidgets.CheckBox, 0, len(goals))
-	for _, g := range goals {
-		label := g.Label()
-		box, err := win.AddCheckBox(label, true)
-		if err != nil {
-			return err
-		}
-		boxes = append(boxes, box)
-	}
-	if len(goals) == 0 {
-		if _, err := win.AddLabel("Целей не найдено. Запустите crescent -dump."); err != nil {
-			return err
-		}
-	}
-
-	drop, _ := win.AddButton("Убрать снятые из очереди")
-	quit, _ := win.AddButton("Выход")
-
-	selected := func() int {
-		n := 0
-		for _, b := range boxes {
-			if b.Checked.Get() && b.Visible.Get() {
-				n++
-			}
-		}
-		return n
-	}
-	next := codex.NextReset(sessions)
-	refresh := func() {
-		limit := "лимит свободен"
-		if !next.IsZero() {
-			limit = "лимит до " + next.Local().Format("15:04") +
-				" (" + time.Until(next).Round(time.Minute).String() + ")"
-		}
-		status.Text.Set(fmt.Sprintf("Целей: %d, в очереди: %d. %s",
-			len(goals), selected(), limit))
-	}
-	for _, b := range boxes {
-		b.Toggled.On(app.Scope(), func(bool) { refresh() })
-	}
-	drop.Clicked.On(app.Scope(), func(goWidgets.ClickInfo) {
-		for _, b := range boxes {
-			if !b.Checked.Get() {
-				b.Visible.Set(false)
-			}
-		}
-		refresh()
-	})
-	quit.Clicked.On(app.Scope(), func(goWidgets.ClickInfo) { app.Quit() })
-	win.Closing.On(app.Scope(), func(*goWidgets.CloseRequest) { app.Quit() })
-
-	refresh()
-	return app.Run(win)
 }

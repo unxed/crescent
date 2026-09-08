@@ -135,6 +135,20 @@ func (l *Loop) stop() {
 	l.status.Remove()
 }
 
+// SetDisabled replaces the set of sessions kept out of the queue. Safe from any
+// goroutine: the window changes it while the loop is running.
+func (l *Loop) SetDisabled(ids map[string]bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.Policy.Disabled = ids
+}
+
+func (l *Loop) policy() Policy {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.Policy
+}
+
 // Status returns the daemon's current state. Safe from any goroutine.
 func (l *Loop) Status() Status {
 	l.mu.Lock()
@@ -151,7 +165,8 @@ func (l *Loop) step(ctx context.Context) time.Duration {
 		return l.Tick
 	}
 
-	plan := Build(sessions, l.Policy, time.Now(), l.own)
+	pol := l.policy()
+	plan := Build(sessions, pol, time.Now(), l.own)
 
 	// Yielding comes first. The usage limit belongs to the account, so a turn
 	// taken now is a turn taken away from the person at the keyboard.
@@ -177,7 +192,7 @@ func (l *Loop) step(ctx context.Context) time.Duration {
 	goal := runnable[0].Session
 	l.setState(StateRunning, "", time.Time{}, &goal)
 
-	res, err := RunOnce(ctx, l.Policy, goal, Options{Trace: l.Log, Timeout: 60 * time.Minute})
+	res, err := RunOnce(ctx, pol, goal, Options{Trace: l.Log, Timeout: 60 * time.Minute})
 	if err != nil {
 		l.bump(func(s *Status) { s.Errors++ })
 		l.setState(StateFailed, err.Error(), time.Time{}, &goal)
@@ -229,15 +244,16 @@ func (l *Loop) probe(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("каталог сессий не прочитан: %w", err)
 	}
+	pol := l.policy()
 	goal, ok := Default(Goals(sessions), func(s codex.Session) bool {
-		return dirExists(s.Cwd)
+		return dirExists(s.Cwd) && !pol.Disabled[s.ID]
 	})
 	if !ok {
 		return fmt.Errorf("нет ни одной цели, на которой можно проверить связку")
 	}
 
 	l.logf("проверяю на цели: %s", goal.Label())
-	res, err := RunOnce(ctx, l.Policy, goal, Options{
+	res, err := RunOnce(ctx, pol, goal, Options{
 		ReadOnly: true, Trace: l.Log, Timeout: 15 * time.Minute,
 	})
 	if err != nil {

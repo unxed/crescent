@@ -44,6 +44,11 @@ type Policy struct {
 	// CodexPath is the binary to invoke. Resolved rather than assumed, because
 	// the CLI is routinely installed somewhere that is not on PATH.
 	CodexPath string
+
+	// Disabled holds session ids the user has taken out of the queue. Kept as
+	// an opt-out rather than an opt-in so that a goal created after the window
+	// was opened still gets picked up.
+	Disabled map[string]bool
 }
 
 // DefaultPolicy is deliberately conservative: it can edit its own workspace and
@@ -140,6 +145,7 @@ const (
 	SkipNoID         SkipReason = "не удалось определить id сессии"
 	SkipNoCwd        SkipReason = "рабочий каталог не найден"
 	SkipBusy         SkipReason = "сессия только что менялась — похоже, в ней работают"
+	SkipDisabled     SkipReason = "снята галочкой"
 )
 
 // Step is one planned resume.
@@ -216,6 +222,8 @@ func Build(sessions []codex.Session, p Policy, now time.Time, own OwnWrites) Pla
 	for _, s := range goals {
 		step := Step{Session: s}
 		switch {
+		case p.Disabled[s.ID]:
+			step.Skip = SkipDisabled
 		case !s.Status.Resumable():
 			step.Skip = SkipNotResumable
 		case s.ID == "":
