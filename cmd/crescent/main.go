@@ -47,6 +47,9 @@ func main() {
 	find := flag.String("find", "", "find which JSON key holds this text (e.g. a chat name you can see in the app)")
 	deep := flag.Bool("deep", false, "with -find: search the whole Codex directory, not only sessions")
 	refresh := flag.Bool("refresh", false, "forget the scan cache and read every rollout again")
+	run := flag.Bool("run", false, "background mode: push goals forward, waiting out usage limits")
+	noProbe := flag.Bool("no-probe", false, "with -run: skip the read-only self-check")
+	status := flag.Bool("status", false, "print what a running background process is doing")
 	flag.Parse()
 
 	// Go's flag package stops parsing at the first positional argument, so
@@ -94,6 +97,22 @@ func main() {
 		} else {
 			fmt.Println("Кэш сброшен, следующий запуск прочитает все файлы заново.")
 		}
+	}
+
+	if *status {
+		if err := showStatus(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if *run {
+		if err := runDaemon(dir, *readOnly, *noProbe, *prompt); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	if *find != "" {
@@ -166,6 +185,9 @@ func main() {
 		fmt.Println("    crescent -run-once -read-only      предложит подходящую, Enter соглашается")
 		fmt.Println("    crescent -run-once -read-only 2    сразу нужную")
 	}
+	fmt.Println("Гнать цели в фоне, пока не кончатся:")
+	fmt.Println("    crescent -run                      ждёт сброса лимита и продолжает сам")
+	fmt.Println("    crescent -status                   что он делает прямо сейчас")
 	fmt.Println("Ещё:  -plan (очередь)   -doctor (окружение)   -dump (подробно)   -gui (окно)")
 }
 
