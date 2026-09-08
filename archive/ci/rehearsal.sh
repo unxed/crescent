@@ -8,7 +8,7 @@
 # emits, not when it stops understanding a fiction.
 set -eu
 
-root="$(cd "$(dirname "$0")/.." && pwd)"
+root="$(cd "$(dirname "$0")/../.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
@@ -34,8 +34,8 @@ export CRESCENT_CODEX="$tmp/bin/codex"
 cd "$root"
 # The mock is a Go program shared with the Windows rehearsal: Windows cannot
 # spawn a .cmd directly, and that is the platform this exercise exists to cover.
-go build -o "$tmp/bin/codex" ./ci/mockcodex
-go build -o "$tmp/crescent" ./cmd/crescent
+go build -o "$tmp/bin/codex" ./archive/ci/mockcodex
+go build -o "$tmp/crescent" ./archive/cmd/crescent
 
 echo "--- doctor ---"
 "$tmp/crescent" -doctor

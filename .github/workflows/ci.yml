@@ -36,7 +36,7 @@ jobs:
       # cycle — self-check, turns, hitting the limit, waiting. This is the part
       # that would otherwise need a person with an account.
       - name: Daemon rehearsal against a mock codex
-        run: ./ci/rehearsal.sh
+        run: ./archive/ci/rehearsal.sh
 
       # The same rehearsal, but running the Windows build under Wine. The
       # Windows job below is the real check; this one runs alongside the Linux
@@ -46,7 +46,7 @@ jobs:
         run: sudo apt-get install -y --no-install-recommends wine64
 
       - name: Windows build rehearsed under Wine
-        run: ./ci/rehearsal-wine.sh
+        run: ./archive/ci/rehearsal-wine.sh
 
       # The Windows rehearsal is a PowerShell script, and PowerShell has its own
       # ways to go wrong that have nothing to do with Windows: Set-Content does
@@ -55,7 +55,7 @@ jobs:
       # before pwsh was available here. It runs on Linux, so now it is.
       - name: Windows rehearsal script checked under pwsh
         shell: pwsh
-        run: ./ci/rehearsal.ps1
+        run: ./archive/ci/rehearsal.ps1
 
       - name: Cross-compile
         run: |
@@ -65,7 +65,7 @@ jobs:
             flags="-s -w"
             [ "$os" = windows ] && flags="$flags -H windowsgui"
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
-              go build -trimpath -ldflags="$flags" -o /tmp/out ./cmd/crescent
+              go build -trimpath -ldflags="$flags" -o /tmp/out ./archive/cmd/crescent
             echo "  $target ok"
           done
 
@@ -89,9 +89,9 @@ jobs:
       # Wine, which is where these failures get caught first.
       - name: Daemon rehearsal against a mock codex
         shell: pwsh
-        run: ./ci/rehearsal.ps1
+        run: ./archive/ci/rehearsal.ps1
 
       - name: Build as a GUI application
-        run: go build -ldflags="-H windowsgui" -o crescent.exe ./cmd/crescent
+        run: go build -ldflags="-H windowsgui" -o crescent.exe ./archive/cmd/crescent
         env:
           CGO_ENABLED: 0

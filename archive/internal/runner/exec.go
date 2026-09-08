@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/unxed/crescent/internal/codex"
+	"github.com/unxed/crescent/archive/internal/codex"
 )
 
 // Options tune one supervised run.

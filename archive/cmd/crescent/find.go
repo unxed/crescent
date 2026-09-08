@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/unxed/crescent/internal/codex"
+	"github.com/unxed/crescent/archive/internal/codex"
 )
 
 // runFind answers "which JSON key holds this?" by searching for a value the

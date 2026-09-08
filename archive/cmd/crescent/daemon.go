@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/unxed/crescent/internal/runner"
+	"github.com/unxed/crescent/archive/internal/runner"
 )
 
 // runDaemon is the product: goals are pushed forward, one turn at a time, for

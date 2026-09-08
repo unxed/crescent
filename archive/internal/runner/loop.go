@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/unxed/crescent/internal/codex"
+	"github.com/unxed/crescent/archive/internal/codex"
 )
 
 // Loop is the daemon: it watches the sessions directory, waits out usage

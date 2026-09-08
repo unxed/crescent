@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/unxed/crescent/internal/codex"
+	"github.com/unxed/crescent/archive/internal/codex"
 )
 
 func loopEnv(t *testing.T, rollouts map[string]string, stream string, exit int) (*Loop, string) {

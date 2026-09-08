@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/unxed/crescent/internal/codex"
+	"github.com/unxed/crescent/archive/internal/codex"
 )
 
 // Policy is what the user is willing to let an unattended agent do.

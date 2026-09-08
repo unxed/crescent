@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/unxed/crescent/internal/codex"
-	"github.com/unxed/crescent/internal/runner"
+	"github.com/unxed/crescent/archive/internal/codex"
+	"github.com/unxed/crescent/archive/internal/runner"
 	"github.com/unxed/goWidgets"
 	_ "github.com/unxed/goWidgets/backends/gtk"
 	_ "github.com/unxed/goWidgets/backends/headless"

@@ -15,7 +15,7 @@ function Write-Lines([string]$Path, [string[]]$Lines) {
         (New-Object System.Text.UTF8Encoding $false))
 }
 
-$root = Split-Path -Parent $PSScriptRoot
+$root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $tmp  = Join-Path ([System.IO.Path]::GetTempPath()) ("crescent-" + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $tmp -Force | Out-Null
 
@@ -54,8 +54,8 @@ try {
     Push-Location $root
     $mock     = Join-Path $tmp 'bin\codex.exe'
     $crescent = Join-Path $tmp 'crescent.exe'
-    & go build -o $mock ./ci/mockcodex
-    & go build -o $crescent ./cmd/crescent
+    & go build -o $mock ./archive/ci/mockcodex
+    & go build -o $crescent ./archive/cmd/crescent
     if ($LASTEXITCODE -ne 0) { throw 'build failed' }
 
     $env:MOCK_COUNTER   = Join-Path $tmp 'counter'

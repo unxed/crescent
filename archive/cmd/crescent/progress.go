@@ -5,7 +5,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/unxed/crescent/internal/codex"
+	"github.com/unxed/crescent/archive/internal/codex"
 )
 
 // scanProgress reports a slow first sweep, and only that.

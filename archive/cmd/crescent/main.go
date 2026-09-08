@@ -23,8 +23,8 @@ import (
 
 	"context"
 
-	"github.com/unxed/crescent/internal/codex"
-	"github.com/unxed/crescent/internal/runner"
+	"github.com/unxed/crescent/archive/internal/codex"
+	"github.com/unxed/crescent/archive/internal/runner"
 )
 
 func main() {

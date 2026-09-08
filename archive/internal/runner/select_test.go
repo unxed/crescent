@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/unxed/crescent/internal/codex"
+	"github.com/unxed/crescent/archive/internal/codex"
 )
 
 func goals() []codex.Session {

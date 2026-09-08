@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/unxed/crescent/internal/codex"
+	"github.com/unxed/crescent/archive/internal/codex"
 )
 
 // State is what the daemon is doing right now.

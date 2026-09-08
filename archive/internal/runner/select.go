@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/unxed/crescent/internal/codex"
+	"github.com/unxed/crescent/archive/internal/codex"
 )
 
 // Goals returns the sessions worth showing in a chooser, in the order both the

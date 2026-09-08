@@ -20,7 +20,7 @@ if [ -z "${WINE:-}" ]; then
     exit 0
 fi
 
-root="$(cd "$(dirname "$0")/.." && pwd)"
+root="$(cd "$(dirname "$0")/../.." && pwd)"
 tmp="$(mktemp -d)"
 
 export WINEPREFIX="$tmp/prefix"
