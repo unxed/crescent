@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -122,10 +123,42 @@ func (j *Journal) fileFor(threadID string) *os.File {
 // Path returns the directory, for pointing a user at it.
 func (j *Journal) Path() string { return j.dir }
 
+// Views lists what can be shown in the window: the combined feed first, then
+// one entry per goal that has a log. Labels come from the pins, so the list
+// reads the way the checkboxes do.
+func (j *Journal) Views() []string {
+	j.mu.Lock()
+	labels := make([]string, 0, len(j.labels))
+	for _, l := range j.labels {
+		if l != "" {
+			labels = append(labels, l)
+		}
+	}
+	j.mu.Unlock()
+
+	sort.Strings(labels)
+	return append([]string{""}, labels...) // "" is the combined feed
+}
+
+// TailOf returns the last n lines of one goal's log, or of the combined feed
+// when label is empty. This is what lets the window show a single goal's work
+// in full instead of the interleaved summary.
+func (j *Journal) TailOf(label string, n int) string {
+	name := "all.log"
+	if label != "" {
+		name = safeName(label) + ".log"
+	}
+	return tailFile(filepath.Join(j.dir, name), n)
+}
+
 // Tail returns roughly the last n lines of the combined feed, so the window can
 // show recent activity without the user leaving the app.
-func (j *Journal) Tail(n int) string {
-	data, err := os.ReadFile(filepath.Join(j.dir, "all.log"))
+func (j *Journal) Tail(n int) string { return j.TailOf("", n) }
+
+// tailFile reads the last n lines of a file. Reading it whole is fine: the log
+// is size-capped at a few megabytes and rolled over past that.
+func tailFile(path string, n int) string {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
 	}

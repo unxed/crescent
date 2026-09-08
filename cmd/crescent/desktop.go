@@ -33,9 +33,14 @@ type desktop struct {
 	detail   *gw.Label
 	counts   *gw.Label
 	pauseBtn *gw.Button
+	viewBtn  *gw.Button
 	log      *gw.TextView
-	tray     *gw.TrayIcon
-	hasTray  bool
+
+	// which journal the text view is showing: "" is the combined feed, any
+	// other value is one goal's own log.
+	viewing string
+	tray    *gw.TrayIcon
+	hasTray bool
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
@@ -117,6 +122,9 @@ func (d *desktop) build() error {
 	// now, so the list is short enough to show whole.
 	for _, g := range goals {
 		g := g
+		// Register the name now so the journal switcher can offer this goal
+		// even before anything has been written for it.
+		d.jour.Label(g.ThreadID, g.Label)
 		label := g.Label
 		if g.Status != "" {
 			label += "  [" + g.Status + "]"
@@ -140,7 +148,12 @@ func (d *desktop) build() error {
 		_, _ = win.AddLabel("Целей не найдено. Проверьте, что Codex залогинен.")
 	}
 
-	_, _ = win.AddLabel("Журнал:")
+	// A button that cycles the journal rather than a list of them: with only
+	// checkboxes and buttons available, one control that names what it will
+	// show next is clearer than a row of per-goal buttons that grows with the
+	// list.
+	d.viewBtn, _ = win.AddButton("")
+	d.viewBtn.Clicked.On(d.app.Scope(), func(gw.ClickInfo) { d.cycleView() })
 	d.log, _ = win.AddTextView(150)
 
 	d.pauseBtn, _ = win.AddButton("Пауза")
@@ -224,9 +237,40 @@ func (d *desktop) pollLog() {
 	}
 }
 
+// cycleView moves the journal pane to the next goal, wrapping back to the
+// combined feed.
+func (d *desktop) cycleView() {
+	views := d.jour.Views()
+	at := 0
+	for i, v := range views {
+		if v == d.viewing {
+			at = i
+			break
+		}
+	}
+	d.viewing = views[(at+1)%len(views)]
+	d.refreshLog()
+}
+
 func (d *desktop) refreshLog() {
-	if d.log != nil {
-		d.log.SetText(d.jour.Tail(200))
+	if d.log == nil {
+		return
+	}
+	text := d.jour.TailOf(d.viewing, 400)
+	if text == "" {
+		if d.viewing == "" {
+			text = "(пока пусто)"
+		} else {
+			text = "(для этой цели записей ещё нет — они появятся, когда её перезапустят)"
+		}
+	}
+	d.log.SetText(text)
+	if d.viewBtn != nil {
+		name := "все цели вместе"
+		if d.viewing != "" {
+			name = d.viewing
+		}
+		d.viewBtn.Text.Set("Журнал: " + name + "   (нажмите, чтобы переключить)")
 	}
 }
 
