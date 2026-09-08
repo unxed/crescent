@@ -114,15 +114,28 @@ func (c *Client) RateLimits(ctx context.Context) (RateLimits, json.RawMessage, e
 	return limits, raw, nil
 }
 
-// Thread is one conversation, named as the schema names it.
-type Thread struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Cwd     string `json:"cwd"`
-	Status  string `json:"status"`
-	Preview string `json:"preview"`
-	Updated string `json:"updatedAt"`
+// ThreadStatus is an object, not a string: {"type":"notLoaded"}. Declaring it
+// as a string made the whole response fail to decode, which — because the error
+// was being swallowed — surfaced as "no threads at all".
+type ThreadStatus struct {
+	Type string `json:"type"`
 }
+
+// Thread is one conversation, named as the server actually sends it.
+type Thread struct {
+	ID        string       `json:"id"`
+	SessionID string       `json:"sessionId"`
+	Name      string       `json:"name"`
+	Cwd       string       `json:"cwd"`
+	Path      string       `json:"path"`
+	Model     string       `json:"model"`
+	Status    ThreadStatus `json:"status"`
+	Preview   string       `json:"preview"`
+	Updated   int64        `json:"updatedAt"`
+}
+
+// Loaded reports whether the server currently holds this thread in memory.
+func (t Thread) Loaded() bool { return t.Status.Type != "" && t.Status.Type != "notLoaded" }
 
 // Label is the name to show a human, falling back to the preview line.
 func (t Thread) Label() string {
@@ -156,8 +169,11 @@ func (c *Client) Threads(ctx context.Context) ([]Thread, json.RawMessage, error)
 			Data       []Thread `json:"data"`
 			NextCursor string   `json:"nextCursor"`
 		}
-		if json.Unmarshal(raw, &page) != nil {
-			return out, first, nil
+		// The error is returned, never swallowed. Silently yielding an empty
+		// list on a decode failure is how a type mismatch on one field came to
+		// look like an account with no conversations.
+		if err := json.Unmarshal(raw, &page); err != nil {
+			return out, first, fmt.Errorf("разбор ответа thread/list: %w", err)
 		}
 		out = append(out, page.Data...)
 		if page.NextCursor == "" || len(page.Data) == 0 {

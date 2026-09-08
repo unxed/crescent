@@ -55,10 +55,11 @@ func runDoctor(codexPath string, verbose, showRaw bool) error {
 
 	// Said before anything is attempted: while the desktop application runs it
 	// owns the session store, and a second owner is not possible.
+	// Reading turns out not to conflict: the thread list arrives whether or not
+	// the application is running. Only taking a turn needs sole ownership, so
+	// the warning belongs there rather than here.
 	if running, name := codexcli.AppRunning(); running {
-		fmt.Printf("\nВНИМАНИЕ: запущено приложение %s.\n", name)
-		fmt.Println("Владелец сессий может быть только один, так что закройте его целиком.")
-		fmt.Println("Пробую всё равно — посмотрим, что скажет сервер.")
+		fmt.Printf("(запущено приложение %s — на чтение не влияет)\n", name)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -134,22 +135,34 @@ func runDoctor(codexPath string, verbose, showRaw bool) error {
 		fmt.Println("  ", short(string(rawThreads), 1200))
 	}
 
-	shown := 0
+	shown, failed := 0, 0
 	for _, t := range threads {
 		if t.ID == "" {
 			continue
 		}
 		goal, err := client.Goal(ctx, t.ID)
-		if err != nil || !goal.Set() {
+		if err != nil {
+			// Worth naming: a thread that has to be loaded before its goal can
+			// be read is a different problem from a thread without a goal.
+			if failed == 0 {
+				fmt.Printf("   thread/goal/get не отработал (%s): %v\n", short(t.Label(), 40), err)
+			}
+			failed++
+			continue
+		}
+		if !goal.Set() {
 			continue
 		}
 		shown++
 		fmt.Printf("\n   • %s\n", orDash(t.Label()))
-		fmt.Printf("     %s  •  %s\n", orDash(goal.Status), orDash(t.Cwd))
+		fmt.Printf("     цель: %s  •  %s\n", orDash(goal.Status), orDash(t.Cwd))
 		fmt.Printf("     %s\n", short(goal.Objective, 90))
 	}
+	if failed > 0 {
+		fmt.Printf("\n   целей не удалось прочитать: %d\n", failed)
+	}
 	if shown == 0 {
-		fmt.Println("   ни у одного треда нет цели")
+		fmt.Println("\n   ни у одного треда нет цели")
 	}
 	return nil
 }

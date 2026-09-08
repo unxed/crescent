@@ -1,6 +1,7 @@
 package appserver
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -108,5 +109,37 @@ func TestTimestampAcceptsStringAndNumber(t *testing.T) {
 		if err := ts.UnmarshalJSON([]byte(body)); err != nil || ts.Valid {
 			t.Errorf("%s принят за время", body)
 		}
+	}
+}
+
+// The response below is trimmed from a live server. status is an object, not a
+// string, and declaring it as a string made the whole page fail to decode — a
+// failure that, being swallowed, was reported as "no threads".
+func TestThreadListDecodesTheRealShape(t *testing.T) {
+	const body = `{"data":[{"id":"01a08208-2013-7922-95c2-34c9cd13f424",` +
+		`"sessionId":"01a08208-2013-7922-95c2-34c9cd13f424","preview":"Ты — Лунобот-2",` +
+		`"model":"gpt-5.6-luna","createdAt":1788887965,"updatedAt":1788896500,` +
+		`"status":{"type":"notLoaded"},"path":"/home/u/.codex/sessions/x.jsonl",` +
+		`"cwd":"/home/u/f4","name":"Следовать инструкции Лунобот-2","turns":[]}],"nextCursor":null}`
+
+	var page struct {
+		Data       []Thread `json:"data"`
+		NextCursor string   `json:"nextCursor"`
+	}
+	if err := json.Unmarshal([]byte(body), &page); err != nil {
+		t.Fatalf("настоящий ответ не разобрался: %v", err)
+	}
+	if len(page.Data) != 1 {
+		t.Fatalf("тредов %d, ожидался 1", len(page.Data))
+	}
+	th := page.Data[0]
+	if th.Label() != "Следовать инструкции Лунобот-2" {
+		t.Errorf("Label = %q", th.Label())
+	}
+	if th.Status.Type != "notLoaded" || th.Loaded() {
+		t.Errorf("статус = %+v, тред не должен считаться загруженным", th.Status)
+	}
+	if th.Cwd != "/home/u/f4" {
+		t.Errorf("Cwd = %q", th.Cwd)
 	}
 }
