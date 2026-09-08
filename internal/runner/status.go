@@ -55,6 +55,11 @@ func (s Status) Line() string {
 		if s.Goal != "" {
 			return "работает: " + s.Goal
 		}
+	case StateYielding:
+		if !s.Until.IsZero() && time.Until(s.Until) > 0 {
+			return "уступает, вы работаете в Codex — вернусь в " +
+				s.Until.Local().Format("15:04")
+		}
 	}
 	if s.Message != "" {
 		return string(s.State) + ": " + s.Message

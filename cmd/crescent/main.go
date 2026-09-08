@@ -400,7 +400,7 @@ func runDoctor(dir string) {
 // do unattended is visible here first.
 func runPlan(sessions []codex.Session) {
 	pol := runner.DefaultPolicy()
-	pl := runner.Build(sessions, pol, time.Now())
+	pl := runner.Build(sessions, pol, time.Now(), nil)
 
 	fmt.Println("crescent — план (ничего не запускается)")
 	fmt.Println()

@@ -4,11 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
-	"github.com/unxed/crescent/internal/codex"
 	"github.com/unxed/crescent/internal/runner"
 	"github.com/unxed/goWidgets"
 	_ "github.com/unxed/goWidgets/backends/gtk"
@@ -58,8 +56,9 @@ func runTray(dir string, readOnly, noProbe bool, prompt string) error {
 	}
 
 	t := &trayApp{app: app, dir: dir, pol: pol}
-	// With no console to print to, the log has to go somewhere findable.
-	if f, err := openLog(); err == nil {
+	// With no console to print to, the log has to go somewhere findable — the
+	// same file the terminal mode writes to, so there is one place to look.
+	if f, err := runner.OpenLog(); err == nil {
 		t.log = f
 		defer f.Close()
 	}
@@ -185,27 +184,4 @@ func (t *trayApp) writef(format string, a ...any) {
 		w = t.log
 	}
 	fmt.Fprintf(w, "%s  %s\n", time.Now().Format("15:04:05"), fmt.Sprintf(format, a...))
-}
-
-// openLog returns the file the tray writes to, beside the cache. A tray
-// application has no console, so without this its output would vanish.
-func openLog() (*os.File, error) {
-	dir, err := codex.CacheDir()
-	if err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, err
-	}
-	return os.OpenFile(filepath.Join(dir, "crescent.log"),
-		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-}
-
-// LogPath is where the tray writes, for anything that wants to point at it.
-func LogPath() string {
-	dir, err := codex.CacheDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(dir, "crescent.log")
 }

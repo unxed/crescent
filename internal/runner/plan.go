@@ -151,10 +151,27 @@ type Step struct {
 
 // Plan is the whole decision: what runs, in what order, and when it can start.
 type Plan struct {
-	Steps     []Step
-	StartAt   time.Time // zero means "right now"
-	Limited   bool      // the account is inside an exhausted window
-	Interrupt bool      // a human appears to be working; crescent stands down
+	Steps      []Step
+	StartAt    time.Time // zero means "right now"
+	Limited    bool      // the account is inside an exhausted window
+	Interrupt  bool      // a human appears to be working; crescent stands down
+	YieldUntil time.Time // when the quiet period around that work runs out
+}
+
+// OwnWrites records when crescent itself last finished a turn for a session,
+// so its own footprints are not mistaken for someone else's.
+type OwnWrites map[string]time.Time
+
+// ownSlack is how long after a turn a rollout may still be settling. The file
+// is written while the turn runs, and the modification time lands somewhere
+// around its end.
+const ownSlack = 60 * time.Second
+
+// touchedByUs reports whether a session's latest change looks like crescent's
+// own work rather than a person's.
+func (o OwnWrites) touchedByUs(s codex.Session) bool {
+	at, ok := o[s.ID]
+	return ok && s.Modified.Before(at.Add(ownSlack))
 }
 
 // Build works out what crescent would do with the sessions it found.
@@ -165,14 +182,20 @@ type Plan struct {
 // agents editing one checkout. And crescent yields to a human: if any rollout
 // in the directory changed within the quiet period, someone is at the keyboard
 // and the whole plan waits.
-func Build(sessions []codex.Session, p Policy, now time.Time) Plan {
+func Build(sessions []codex.Session, p Policy, now time.Time, own OwnWrites) Plan {
 	var plan Plan
 
+	// A rollout touched a moment ago means a human is in that thread — unless
+	// crescent is the one who touched it. Without this exception the daemon
+	// reads its own turn as someone else's work and stands down for the whole
+	// quiet period, managing one turn every fifteen minutes.
 	for _, s := range sessions {
-		if now.Sub(s.Modified) < p.QuietPeriod {
-			plan.Interrupt = true
-			break
+		if now.Sub(s.Modified) >= p.QuietPeriod || own.touchedByUs(s) {
+			continue
 		}
+		plan.Interrupt = true
+		plan.YieldUntil = s.Modified.Add(p.QuietPeriod)
+		break
 	}
 
 	if next := codex.NextReset(sessions); !next.IsZero() {
@@ -202,7 +225,7 @@ func Build(sessions []codex.Session, p Policy, now time.Time) Plan {
 		case !dirExists(s.Cwd):
 			// Many sessions run out of /tmp, which does not survive a reboot.
 			step.Skip = SkipNoCwd
-		case now.Sub(s.Modified) < p.QuietPeriod:
+		case now.Sub(s.Modified) < p.QuietPeriod && !own.touchedByUs(s):
 			step.Skip = SkipBusy
 		default:
 			step.Args = BuildArgs(s, p)

@@ -32,6 +32,10 @@ type Loop struct {
 	// — a tray icon polling from another goroutine, for instance.
 	mu      sync.Mutex
 	current Status
+
+	// own remembers the turns crescent itself drove, so the yield check does
+	// not read them as somebody else at the keyboard.
+	own OwnWrites
 }
 
 // NewLoop prepares a daemon with sensible defaults.
@@ -47,6 +51,7 @@ func NewLoop(dir string, p Policy) (*Loop, error) {
 		Tick:          30 * time.Second,
 		ReadOnlyProbe: true,
 		status:        w,
+		own:           OwnWrites{},
 		current: Status{
 			State:     StateStarting,
 			Since:     time.Now(),
@@ -146,12 +151,12 @@ func (l *Loop) step(ctx context.Context) time.Duration {
 		return l.Tick
 	}
 
-	plan := Build(sessions, l.Policy, time.Now())
+	plan := Build(sessions, l.Policy, time.Now(), l.own)
 
 	// Yielding comes first. The usage limit belongs to the account, so a turn
 	// taken now is a turn taken away from the person at the keyboard.
 	if plan.Interrupt {
-		l.setState(StateYielding, "", time.Time{}, nil)
+		l.setState(StateYielding, "", plan.YieldUntil, nil)
 		return l.Tick
 	}
 
@@ -179,6 +184,7 @@ func (l *Loop) step(ctx context.Context) time.Duration {
 		return l.Tick
 	}
 	l.bump(func(s *Status) { s.Turns++ })
+	l.own[goal.ID] = time.Now()
 
 	switch {
 	case res.Failure == FailOutOfCredits:

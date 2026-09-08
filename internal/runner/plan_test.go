@@ -68,7 +68,7 @@ func TestPlanSkipsWhatItCannotRun(t *testing.T) {
 		{ID: "d", Cwd: "/nonexistent/path/xyz", Objective: "gone", Status: "paused", Modified: long},
 		{ID: "e", Cwd: dir, Objective: "no goal is filtered out earlier", Modified: long},
 	}
-	plan := Build(sessions, policy(), now)
+	plan := Build(sessions, policy(), now, nil)
 
 	byID := map[string]SkipReason{}
 	for _, st := range plan.Steps {
@@ -100,7 +100,7 @@ func TestPlanYieldsToActiveHuman(t *testing.T) {
 		{ID: "a", Cwd: dir, Objective: "ok", Status: "active", Modified: now.Add(-48 * time.Hour)},
 		{ID: "b", Cwd: dir, Objective: "busy", Status: "active", Modified: now.Add(-30 * time.Second)},
 	}
-	plan := Build(sessions, policy(), now)
+	plan := Build(sessions, policy(), now, nil)
 	if !plan.Interrupt {
 		t.Fatal("a rollout written 30s ago did not raise the stand-down flag")
 	}
@@ -114,7 +114,7 @@ func TestPlanOrdersFreshestFirst(t *testing.T) {
 		{ID: "old", Cwd: dir, Objective: "o", Status: "active", Modified: now.Add(-100 * time.Hour)},
 		{ID: "new", Cwd: dir, Objective: "n", Status: "active", Modified: now.Add(-2 * time.Hour)},
 	}
-	plan := Build(sessions, policy(), now)
+	plan := Build(sessions, policy(), now, nil)
 	if plan.Steps[0].Session.ID != "new" {
 		t.Errorf("order = %s first, want the freshest", plan.Steps[0].Session.ID)
 	}
@@ -130,7 +130,7 @@ func TestPlanWaitsForTheLimitWindow(t *testing.T) {
 		Modified: now.Add(-48 * time.Hour),
 		Resets:   []codex.Reset{{At: reset, Key: "resets_at"}},
 	}}
-	plan := Build(sessions, policy(), now)
+	plan := Build(sessions, policy(), now, nil)
 	if !plan.Limited {
 		t.Fatal("plan does not know the account is limited")
 	}
@@ -345,5 +345,51 @@ func TestGoCachesPrefersTheEnvironment(t *testing.T) {
 	got := GoCaches()
 	if len(got) != 2 || got[0] != mod || got[1] != build {
 		t.Errorf("got %v, want [%s %s]", got, mod, build)
+	}
+}
+
+// The daemon writes to a rollout every time it drives a goal. Without knowing
+// that, its next look at the directory sees a file touched seconds ago, decides
+// a human is working, and stands down for the whole quiet period — one turn
+// every fifteen minutes.
+func TestOwnTurnsAreNotMistakenForHumanActivity(t *testing.T) {
+	now := time.Now()
+	dir := t.TempDir()
+	s := codex.Session{
+		ID: "a", Cwd: dir, Objective: "цель", Status: "active",
+		Modified: now.Add(-5 * time.Second), // as if crescent just finished
+	}
+
+	if plan := Build([]codex.Session{s}, policy(), now, nil); !plan.Interrupt {
+		t.Fatal("a fresh rollout should look like human activity when nothing is known")
+	}
+
+	own := OwnWrites{"a": now.Add(-10 * time.Second)}
+	plan := Build([]codex.Session{s}, policy(), now, own)
+	if plan.Interrupt {
+		t.Error("crescent stood down because of its own turn")
+	}
+	if len(plan.Runnable()) != 1 {
+		t.Errorf("runnable = %d, want the goal to stay available", len(plan.Runnable()))
+	}
+}
+
+// Somebody else's edit still stops it, even in a session crescent has driven.
+func TestHumanEditAfterOurTurnStillYields(t *testing.T) {
+	now := time.Now()
+	dir := t.TempDir()
+	s := codex.Session{
+		ID: "a", Cwd: dir, Objective: "цель", Status: "active",
+		Modified: now.Add(-2 * time.Second),
+	}
+	// Our turn ended well before this change.
+	own := OwnWrites{"a": now.Add(-10 * time.Minute)}
+
+	plan := Build([]codex.Session{s}, policy(), now, own)
+	if !plan.Interrupt {
+		t.Fatal("a change made long after our turn is somebody else's")
+	}
+	if plan.YieldUntil.IsZero() {
+		t.Error("the daemon does not say how long it will stand down")
 	}
 }

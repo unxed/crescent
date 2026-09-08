@@ -32,6 +32,14 @@ func runDaemon(dir string, readOnly, noProbe bool, prompt string) error {
 	}
 	loop.ReadOnlyProbe = !noProbe
 
+	// The terminal shows the run; the file outlives it. "What was it doing at
+	// three in the morning" is asked long after the terminal is closed.
+	out, file := runner.LogWriter(os.Stdout)
+	if file != nil {
+		defer file.Close()
+	}
+	loop.Log = out
+
 	fmt.Println("crescent — фоновый режим")
 	fmt.Printf("  codex:     %s\n", pol.CodexPath)
 	fmt.Printf("  песочница: %s\n", pol.Sandbox)
@@ -39,6 +47,9 @@ func runDaemon(dir string, readOnly, noProbe bool, prompt string) error {
 		fmt.Printf("  плюс запись в: %v\n", pol.WritableRoots)
 	}
 	fmt.Printf("  уступаю вам, если сессии менялись за последние %s\n", pol.QuietPeriod)
+	if p, err := runner.LogPath(); err == nil {
+		fmt.Printf("  журнал:    %s\n", p)
+	}
 	fmt.Println("  Ctrl-C — остановить")
 	fmt.Println()
 
@@ -71,5 +82,8 @@ func showStatus() error {
 		fmt.Printf("Запущен:   %s\n", s.StartedAt.Local().Format("2006-01-02 15:04:05"))
 	}
 	fmt.Printf("Ходов: %d, упирался в лимит: %d, ошибок: %d\n", s.Turns, s.Limits, s.Errors)
+	if p, err := runner.LogPath(); err == nil {
+		fmt.Printf("Журнал:    %s\n", p)
+	}
 	return nil
 }
