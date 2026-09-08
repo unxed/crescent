@@ -392,6 +392,12 @@ func addReset(windows []Reset, t time.Time, key string) []Reset {
 // others a file:// URL, and those are percent-encoded — a cwd with non-ASCII
 // characters arrives as file:///home/u/%D0%94%D0%BE%D0%BA... and is useless
 // until decoded.
+//
+// The Windows form needs one more step. There, file:///C:/Users/x parses to the
+// path /C:/Users/x: a leading slash that is part of URL syntax, not of the
+// path. Left in place it produces \C:\Users\x, which no API will open. On Unix
+// the slashes are the separator already and must be left exactly as they are —
+// converting them there was a bug the Windows CI run brought to light.
 func normalizePath(s string) string {
 	if !strings.HasPrefix(s, "file://") {
 		return s
@@ -400,11 +406,23 @@ func normalizePath(s string) string {
 	if err != nil {
 		return s
 	}
-	if p := u.Path; p != "" {
+	p := u.Path
+	if p == "" {
+		return s
+	}
+	if u.Host != "" && u.Host != "localhost" {
+		// file://server/share — a UNC path.
+		return filepath.FromSlash("//" + u.Host + p)
+	}
+	if driveLetterRe.MatchString(p) {
+		p = p[1:] // /C:/Users/x -> C:/Users/x
 		return filepath.FromSlash(p)
 	}
-	return s
+	return p
 }
+
+// driveLetterRe matches the leading /C:/ of a Windows file URL.
+var driveLetterRe = regexp.MustCompile(`^/[A-Za-z]:[/\\]`)
 
 // Walk visits every key/value pair in a decoded JSON document. Exported because
 // the same schema-tolerant approach is needed for the codex --json event

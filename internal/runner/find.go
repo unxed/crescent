@@ -202,7 +202,33 @@ func isExec(path string) bool {
 		return false
 	}
 	if runtime.GOOS == "windows" {
-		return true
+		// Windows has no execute bit; the extension is what decides. Treating
+		// every file as runnable meant a stray `codex` text file would be
+		// accepted as the CLI, and CreateProcess would then fail with a much
+		// less helpful message than "not found".
+		ext := strings.ToLower(filepath.Ext(path))
+		for _, e := range executableExts() {
+			if ext == e {
+				return true
+			}
+		}
+		return false
 	}
 	return fi.Mode()&0o111 != 0
+}
+
+// executableExts follows PATHEXT when it is set, which is what the shell does.
+func executableExts() []string {
+	if v := os.Getenv("PATHEXT"); v != "" {
+		var out []string
+		for _, e := range strings.Split(v, ";") {
+			if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
+				out = append(out, e)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	return []string{".exe", ".com", ".bat", ".cmd"}
 }

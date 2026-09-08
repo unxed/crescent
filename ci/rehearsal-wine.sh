@@ -22,10 +22,22 @@ fi
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
 
 export WINEPREFIX="$tmp/prefix"
 export WINEDEBUG=-all
+
+# wineserver outlives the last process that used the prefix and keeps files
+# open in it, so removing the directory races it and fails. Shutting it down
+# first is the documented way; and cleanup must never decide the exit status,
+# which is what turned a passed rehearsal into a failed job.
+cleanup() {
+    status=$?
+    "${WINESERVER:-wineserver}" -k 2>/dev/null || /usr/lib/wine/wineserver -k 2>/dev/null || true
+    sleep 1
+    rm -rf "$tmp" 2>/dev/null || true
+    exit "$status"
+}
+trap cleanup EXIT
 
 cd "$root"
 mkdir -p "$tmp/bin"
@@ -55,6 +67,16 @@ export CRESCENT_CODEX="$(winpath "$tmp/bin/codex.exe")"
 export MOCK_COUNTER="$tmp/counter"
 
 run() { "$WINE" "$tmp/bin/crescent.exe" "$@" 2>&1 | grep -v '^wine:' || true; }
+
+# The unit tests themselves, compiled for Windows and run here. This is the
+# cheapest place to catch a platform assumption: the same failures the Windows
+# job reports minutes later show up in seconds.
+echo "--- тесты как Windows-бинарники ---"
+for pkg in ./internal/codex ./internal/runner; do
+    out="$tmp/bin/$(basename "$pkg")_test.exe"
+    CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go test -c -o "$out" "$pkg"
+    "$WINE" "$out" 2>&1 | grep -v '^wine:' | tail -5
+done
 
 echo "--- doctor (Windows-бинарник) ---"
 run -doctor | tee "$tmp/doctor.txt"

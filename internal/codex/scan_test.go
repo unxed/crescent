@@ -202,6 +202,27 @@ func TestCwdFileURLIsNormalised(t *testing.T) {
 	}
 }
 
+// A Windows Codex writes drive-letter URLs, and the leading slash there belongs
+// to the URL, not to the path: /C:/Users/x must not become \C:\Users\x.
+func TestCwdWindowsFileURL(t *testing.T) {
+	got := normalizePath("file:///C:/Users/unxed/%D0%94%D0%BE%D0%BA/f4")
+	want := filepath.FromSlash("C:/Users/unxed/Док/f4")
+	if got != want {
+		t.Errorf("normalizePath = %q, want %q", got, want)
+	}
+	if strings.HasPrefix(got, "/") || strings.HasPrefix(got, `\`) {
+		t.Errorf("%q keeps the URL's leading separator", got)
+	}
+}
+
+func TestCwdUNCFileURL(t *testing.T) {
+	got := normalizePath("file://server/share/work")
+	want := filepath.FromSlash("//server/share/work")
+	if got != want {
+		t.Errorf("normalizePath = %q, want %q", got, want)
+	}
+}
+
 // Two rollouts continued from the same parent thread must not report the same
 // session id: `rollout-<ts>-<parent>_<own>.jsonl`.
 func TestForkedRolloutsGetDistinctIDs(t *testing.T) {

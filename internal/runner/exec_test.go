@@ -3,33 +3,12 @@ package runner
 import (
 	"bytes"
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/unxed/crescent/internal/codex"
 )
-
-// fakeCodex writes the given stdout lines and exits with the given code.
-func fakeCodex(t *testing.T, stdout string, exit int) string {
-	t.Helper()
-	dir := t.TempDir()
-	p := filepath.Join(dir, "codex")
-	script := "#!/bin/sh\ncat <<'STREAM'\n" + stdout + "\nSTREAM\nexit " + itoa(exit) + "\n"
-	if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return p
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	return string(rune('0' + n))
-}
 
 func session(t *testing.T) codex.Session {
 	return codex.Session{ID: "01a0552e-8698-7961-b9ab-199d982579a2", Cwd: t.TempDir(), Objective: "x", Status: "active"}
@@ -42,8 +21,7 @@ func TestRunOnceReadsTheEventStream(t *testing.T) {
 {"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Готово, тесты зелёные."}}
 {"type":"turn.completed","usage":{"input_tokens":1200,"output_tokens":340,"cached_input_tokens":0,"reasoning_output_tokens":90}}`
 
-	p := DefaultPolicy()
-	p.CodexPath = fakeCodex(t, stream, 0)
+	p := mockCodex(t, stream, 0)
 
 	var trace bytes.Buffer
 	res, err := RunOnce(context.Background(), p, session(t), Options{Trace: &trace, Timeout: 20 * time.Second})
@@ -85,8 +63,7 @@ func TestRunOnceDetectsUsageLimitAndReset(t *testing.T) {
 	stream := `{"type":"turn.failed","error":{"message":"You have hit your usage limit. Try again at ` +
 		at.Format("3:04 PM") + `."}}`
 
-	p := DefaultPolicy()
-	p.CodexPath = fakeCodex(t, stream, 1)
+	p := mockCodex(t, stream, 1)
 
 	res, err := RunOnce(context.Background(), p, session(t), Options{Timeout: 20 * time.Second})
 	if err != nil {
@@ -111,8 +88,7 @@ func TestRunOnceDetectsUsageLimitAndReset(t *testing.T) {
 
 // A read-only first run must be provably unable to write anything.
 func TestReadOnlyOptionDropsWriteAccess(t *testing.T) {
-	p := DefaultPolicy()
-	p.CodexPath = fakeCodex(t, `{"type":"turn.completed"}`, 0)
+	p := mockCodex(t, `{"type":"turn.completed"}`, 0)
 	p.WritableRoots = []string{"/home/u/go/pkg/mod"}
 
 	res, err := RunOnce(context.Background(), p, session(t), Options{ReadOnly: true, Timeout: 20 * time.Second})
@@ -133,8 +109,7 @@ func TestRunOnceHandlesVeryLongLines(t *testing.T) {
 	big := strings.Repeat("x", 300_000)
 	stream := `{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"` + big + `"}}`
 
-	p := DefaultPolicy()
-	p.CodexPath = fakeCodex(t, stream, 0)
+	p := mockCodex(t, stream, 0)
 
 	res, err := RunOnce(context.Background(), p, session(t), Options{Timeout: 30 * time.Second})
 	if err != nil {
@@ -149,8 +124,7 @@ func TestRunOnceHandlesVeryLongLines(t *testing.T) {
 func TestRawCaptureIsVerbatim(t *testing.T) {
 	stream := `{"type":"a"}
 {"type":"b"}`
-	p := DefaultPolicy()
-	p.CodexPath = fakeCodex(t, stream, 0)
+	p := mockCodex(t, stream, 0)
 
 	var raw bytes.Buffer
 	if _, err := RunOnce(context.Background(), p, session(t), Options{RawTo: &raw, Timeout: 20 * time.Second}); err != nil {

@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func loopEnv(t *testing.T, rollouts map[string]string, codexScript string) (*Loop, string) {
+func loopEnv(t *testing.T, rollouts map[string]string, stream string, exit int) (*Loop, string) {
 	t.Helper()
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 
@@ -33,13 +33,7 @@ func loopEnv(t *testing.T, rollouts map[string]string, codexScript string) (*Loo
 		os.Chtimes(filepath.Join(dir, e.Name()), old, old)
 	}
 
-	bin := filepath.Join(t.TempDir(), "codex")
-	if err := os.WriteFile(bin, []byte(codexScript), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	p := DefaultPolicy()
-	p.CodexPath = bin
+	p := mockCodex(t, stream, exit)
 	p.QuietPeriod = time.Minute
 
 	l, err := NewLoop(dir, p)
@@ -56,15 +50,17 @@ const oneGoal = `{"type":"session_meta","cwd":"CWD"}
 
 func goalRollout(t *testing.T) map[string]string {
 	t.Helper()
+	// jsonPath, not plain concatenation: a Windows temp directory is full of
+	// backslashes, which are escapes inside a JSON string.
 	return map[string]string{
-		"rollout-a-01a04f59-3ac3-7790-9f25-a0bd6c10ca2b.jsonl": strings.Replace(oneGoal, "CWD", t.TempDir(), 1),
+		"rollout-a-01a04f59-3ac3-7790-9f25-a0bd6c10ca2b.jsonl": strings.Replace(oneGoal, "CWD", jsonPath(t.TempDir()), 1),
 	}
 }
 
 // The self-check exists so that "does resume work here?" is answered by the
 // program, not by asking the user to run something.
 func TestProbeFailsLoudlyWhenCodexPrintsNothing(t *testing.T) {
-	l, _ := loopEnv(t, goalRollout(t), "#!/bin/sh\nexit 3\n")
+	l, _ := loopEnv(t, goalRollout(t), "", 3)
 
 	err := l.Run(context.Background())
 	if err == nil {
@@ -86,7 +82,7 @@ func TestProbeFailsLoudlyWhenCodexPrintsNothing(t *testing.T) {
 // Output that is not the expected JSON must be reported as a format change,
 // with the command that captures it — not as a generic failure.
 func TestProbeReportsAFormatChange(t *testing.T) {
-	l, _ := loopEnv(t, goalRollout(t), "#!/bin/sh\necho 'not json at all'\n")
+	l, _ := loopEnv(t, goalRollout(t), "not json at all", 0)
 
 	err := l.Run(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "формат событий") {
@@ -100,9 +96,8 @@ func TestProbeReportsAFormatChange(t *testing.T) {
 // Hitting the limit during the self-check is not a failure: being told "no"
 // proves the machinery works.
 func TestProbeTreatsAUsageLimitAsSuccess(t *testing.T) {
-	script := "#!/bin/sh\n" +
-		`echo '{"type":"turn.failed","error":{"message":"You have hit your usage limit. Try again later."}}'` + "\nexit 1\n"
-	l, _ := loopEnv(t, goalRollout(t), script)
+	l, _ := loopEnv(t, goalRollout(t),
+		`{"type":"turn.failed","error":{"message":"You have hit your usage limit. Try again later."}}`, 1)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
@@ -115,11 +110,9 @@ func TestProbeTreatsAUsageLimitAsSuccess(t *testing.T) {
 // instead of hammering.
 func TestLoopWaitsAfterHittingTheLimit(t *testing.T) {
 	resetLocal := time.Now().Add(3 * time.Hour).Format("3:04 PM")
-	script := "#!/bin/sh\n" +
-		`echo '{"type":"thread.started"}'` + "\n" +
-		`echo '{"type":"turn.failed","error":{"message":"You have hit your usage limit. Try again at ` + resetLocal + `."}}'` + "\n" +
-		"exit 1\n"
-	l, _ := loopEnv(t, goalRollout(t), script)
+	l, _ := loopEnv(t, goalRollout(t),
+		`{"type":"thread.started"}`+"\n"+
+			`{"type":"turn.failed","error":{"message":"You have hit your usage limit. Try again at `+resetLocal+`."}}`, 1)
 	l.ReadOnlyProbe = false
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -157,7 +150,7 @@ func TestLoopWaitsAfterHittingTheLimit(t *testing.T) {
 
 // A rollout touched a moment ago means a human is in that thread.
 func TestLoopYieldsToAHuman(t *testing.T) {
-	l, dir := loopEnv(t, goalRollout(t), "#!/bin/sh\necho '{\"type\":\"turn.completed\"}'\n")
+	l, dir := loopEnv(t, goalRollout(t), `{"type":"turn.completed"}`, 0)
 	l.ReadOnlyProbe = false
 
 	now := time.Now()

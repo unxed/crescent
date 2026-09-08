@@ -76,6 +76,8 @@ jobs:
 
       # Windows is the platform neither of us can try by hand, so the rehearsal
       # matters more here than anywhere.
+      # The same suite also runs on the Linux job as a Windows binary under
+      # Wine, which is where these failures get caught first.
       - name: Daemon rehearsal against a mock codex
         shell: pwsh
         run: ./ci/rehearsal.ps1

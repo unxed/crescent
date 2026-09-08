@@ -151,9 +151,19 @@ func indexOf(ss []string, want string) int {
 // A machine with daily Codex use and 331 rollout files still had no `codex` on
 // PATH: the installers put it in a user-local bin, an npm or nvm prefix, or the
 // desktop app's own directory. Failing on PATH alone was wrong.
+// codexFile is the name the CLI would actually have on this platform. Windows
+// decides "can this be run?" by extension, so a file called plainly "codex" is
+// not a program there.
+func codexFile() string {
+	if runtime.GOOS == "windows" {
+		return "codex.exe"
+	}
+	return "codex"
+}
+
 func TestFindCodexHonoursExplicitOverride(t *testing.T) {
 	dir := t.TempDir()
-	bin := filepath.Join(dir, "codex")
+	bin := filepath.Join(dir, codexFile())
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho hi\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -188,23 +198,53 @@ func TestFindCodexReportsWhereItLooked(t *testing.T) {
 		t.Fatalf("only %d locations reported; a failure must say where it looked", len(tried))
 	}
 	joined := strings.Join(tried, "\n")
-	for _, want := range []string{"PATH", ".local/bin/codex"} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("did not try %s:\n%s", want, joined)
+	// The places worth looking are platform-specific, so the expectations are
+	// too: asserting Unix paths on a Windows runner said nothing about the
+	// code and everything about the assertion.
+	want := []string{"PATH", filepath.Join(".local", "bin", "codex")}
+	if runtime.GOOS == "windows" {
+		want = []string{"PATH", "OpenAI"}
+	}
+	for _, w := range want {
+		if !strings.Contains(joined, w) {
+			t.Errorf("did not try %s:\n%s", w, joined)
 		}
 	}
 }
 
-// A non-executable file of the right name must not be mistaken for the CLI.
+// A file of the right name that cannot be run must not be mistaken for the CLI.
+// What "cannot be run" means differs: a missing execute bit on Unix, a name
+// with no executable extension on Windows.
 func TestFindCodexIgnoresNonExecutable(t *testing.T) {
 	dir := t.TempDir()
-	bin := filepath.Join(dir, "codex")
+	name := "codex"
+	if runtime.GOOS == "windows" {
+		name = "codex.txt"
+	}
+	bin := filepath.Join(dir, name)
 	if err := os.WriteFile(bin, []byte("not executable"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv(EnvCodex, bin)
 	if got, _ := FindCodex(); got != "" {
-		t.Errorf("FindCodex = %q, want empty for a non-executable file", got)
+		t.Errorf("FindCodex = %q, want empty for a file that cannot be run", got)
+	}
+}
+
+// And one that can be run must be accepted.
+func TestFindCodexAcceptsAnExecutable(t *testing.T) {
+	dir := t.TempDir()
+	name := "codex"
+	if runtime.GOOS == "windows" {
+		name = "codex.exe"
+	}
+	bin := filepath.Join(dir, name)
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(EnvCodex, bin)
+	if got, _ := FindCodex(); got != bin {
+		t.Errorf("FindCodex = %q, want %q", got, bin)
 	}
 }
 
@@ -218,11 +258,11 @@ func TestFindCodexWalksAnAppInstallation(t *testing.T) {
 	if err := os.MkdirAll(deep, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	bin := filepath.Join(deep, "codex")
+	bin := filepath.Join(deep, codexFile())
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got := searchUnder(root, "codex", 7); got != bin {
+	if got := searchUnder(root, codexFile(), 7); got != bin {
 		t.Errorf("searchUnder = %q, want %q", got, bin)
 	}
 }
@@ -235,10 +275,10 @@ func TestSearchUnderRespectsDepthLimit(t *testing.T) {
 	if err := os.MkdirAll(deep, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(deep, "codex"), []byte("x"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(deep, codexFile()), []byte("x"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got := searchUnder(root, "codex", 3); got != "" {
+	if got := searchUnder(root, codexFile(), 3); got != "" {
 		t.Errorf("searchUnder ignored the depth limit and returned %q", got)
 	}
 }
@@ -252,11 +292,11 @@ func TestNewestMatchPrefersLaterVersions(t *testing.T) {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(d, "codex"), []byte("x"), 0o755); err != nil {
+		if err := os.WriteFile(filepath.Join(d, codexFile()), []byte("x"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	got := newestMatch(filepath.Join(root, "*", "codex"))
+	got := newestMatch(filepath.Join(root, "*", codexFile()))
 	if len(got) != 3 {
 		t.Fatalf("matches = %d, want 3", len(got))
 	}
