@@ -2,6 +2,8 @@ github.com/go-webgpu/goffi v0.6.2 h1:xuMaUbqsNQ/xiyy5UwAKZb5vQZUDg9QRCrJIpHJaXSE
 github.com/go-webgpu/goffi v0.6.2/go.mod h1:wfoxNsJkU+5RFbV1kNN1kunhc1lFHuJKK3zpgx08/uM=
 github.com/unxed/goWidgets v0.0.0-20260908173512-257399e52b57 h1:2QgE0LHUQC9Nkc61d8X+6V+5WwQJnWWJlYKI3zIRkwo=
 github.com/unxed/goWidgets v0.0.0-20260908173512-257399e52b57/go.mod h1:t6QDASpUG2GiiV3zp5Q6f/6WUUjyf0XqG749cTpiM6E=
+github.com/unxed/goWidgets v0.0.0-20260908222948-3a97426dd3a7 h1:kK0YB5RSS5CtZ/riKyAIfzorT7yOfvS37dt8+DtxSOI=
+github.com/unxed/goWidgets v0.0.0-20260908222948-3a97426dd3a7/go.mod h1:O3oal05uQvZGgSMmQeGF/3XNeRk9mz2azpLIFx5lK4M=
 github.com/unxed/pureffi v0.1.19 h1:ABOlYiXYOUfp4OtCi2pDcCJE8zsuximIsFlP8VJjtnI=
 github.com/unxed/pureffi v0.1.19/go.mod h1:c0oscxMMVH2fP90dNoW5jl6g1GAhoKJJc0/EJ2cH2xE=
 golang.org/x/sys v0.31.0 h1:ioabZlmFYtWhL+TRYpcnNlLwhyxaM9kWTDEmfnprqik=

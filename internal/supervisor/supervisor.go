@@ -65,6 +65,7 @@ type Supervisor struct {
 	status   Status
 	started  map[string]time.Time // last time we pushed each goal
 	onChange func(Status)
+	wake     chan struct{}
 }
 
 // Options configure a supervisor.
@@ -97,7 +98,18 @@ func New(o Options) *Supervisor {
 		poll:     poll,
 		started:  map[string]time.Time{},
 		onChange: o.OnChange,
+		wake:     make(chan struct{}, 1),
 		status:   Status{State: StateIdle, Since: time.Now()},
+	}
+}
+
+// Wake makes the loop take a pass immediately instead of waiting out the poll
+// interval — used the moment a goal is pinned, so the effect is visible at once
+// rather than up to a poll later.
+func (s *Supervisor) Wake() {
+	select {
+	case s.wake <- struct{}{}:
+	default:
 	}
 }
 
@@ -246,6 +258,8 @@ func (s *Supervisor) sleep(ctx context.Context) bool {
 		select {
 		case <-ctx.Done():
 			return false
+		case <-s.wake:
+			return true // woken early — re-examine now
 		case <-time.After(2 * time.Second):
 		}
 	}

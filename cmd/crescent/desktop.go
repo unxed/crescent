@@ -19,9 +19,9 @@ import (
 	"github.com/unxed/crescent/internal/supervisor"
 )
 
-// desktop is the whole application with a face: pick goals to keep alive by
-// ticking them, and the supervisor keeps them moving across limit resets. Close
-// the window and it lives in the tray; the work carries on behind it.
+// desktop is the whole application with a face: tick the goals to keep alive,
+// watch what they do in the log below, close the window and it lives in the
+// tray while the work goes on.
 type desktop struct {
 	app  *gw.App
 	sup  *supervisor.Supervisor
@@ -31,6 +31,7 @@ type desktop struct {
 	win     *gw.Window
 	status  *gw.Label
 	counts  *gw.Label
+	log     *gw.TextView
 	tray    *gw.TrayIcon
 	hasTray bool
 
@@ -43,13 +44,11 @@ func runDesktop(codexPath, prompt string, verbose bool) error {
 	if err != nil {
 		return err
 	}
-
 	jour, err := journal.Open()
 	if err != nil {
 		client.Close()
 		return err
 	}
-	// Route the model's activity into the journal as it streams in.
 	client.SetActivitySink(func(a appserver.Activity) { jour.Record(a) })
 
 	thePins := pins.Load()
@@ -62,12 +61,8 @@ func runDesktop(codexPath, prompt string, verbose bool) error {
 
 	d := &desktop{app: app, pins: thePins, jour: jour}
 	d.sup = supervisor.New(supervisor.Options{
-		Client:  client,
-		Pins:    thePins,
-		Journal: jour,
-		Prompt:  prompt,
+		Client: client, Pins: thePins, Journal: jour, Prompt: prompt,
 		OnChange: func(s supervisor.Status) {
-			// The supervisor runs on its own goroutine; hop onto the UI thread.
 			app.QueueUpdate(func() { d.render(s) })
 		},
 	})
@@ -85,6 +80,10 @@ func runDesktop(codexPath, prompt string, verbose bool) error {
 	d.cancel = cancel
 	go func() { _ = d.sup.Run(ctx) }()
 
+	// The log is a file the supervisor and the activity sink write to; poll it
+	// a couple of times a second so the window shows what is happening live.
+	go d.pollLog()
+
 	err = app.Run(d.win)
 	cancel()
 	client.Close()
@@ -93,49 +92,57 @@ func runDesktop(codexPath, prompt string, verbose bool) error {
 }
 
 func (d *desktop) build() error {
-	win, err := d.app.NewWindow("crescent", 620, 460)
+	// Tall enough for the goal list, the log, and every button — the previous
+	// window cut the last button off the bottom.
+	win, err := d.app.NewWindow("crescent", 640, 720)
 	if err != nil {
 		return err
 	}
 	d.win = win
 
-	d.status, _ = win.AddLabel("Загружаю цели…")
+	d.status, _ = win.AddLabel("")
 	d.counts, _ = win.AddLabel("")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	goals, err := d.sup.Goals(ctx)
 	if err != nil {
-		d.status.Text.Set("Не удалось получить цели: " + err.Error())
 		goals = nil
 	}
 
-	// One checkbox per goal. Ticking pins it — kept across restarts — and the
-	// supervisor picks it up on its next pass without anything being restarted
-	// now.
 	shown := goals
-	if len(shown) > 14 {
-		shown = shown[:14] // a plain stack shows only so many honestly
+	if len(shown) > 12 {
+		shown = shown[:12]
 	}
 	for _, g := range shown {
 		g := g
-		label := fmt.Sprintf("%s  [%s]", g.Label, g.Status)
-		box, err := win.AddCheckBox(label, d.pins.Pinned(g.ThreadID))
+		box, err := win.AddCheckBox(fmt.Sprintf("%s  [%s]", g.Label, g.Status), d.pins.Pinned(g.ThreadID))
 		if err != nil {
 			return err
 		}
 		box.Toggled.On(d.app.Scope(), func(on bool) {
 			d.pins.Set(g.ThreadID, g.Label, on)
+			// Immediate feedback: say what happened, and wake the supervisor so
+			// the effect is not up to a poll interval away.
+			verb := "снята с наблюдения"
+			if on {
+				verb = "закреплена — будет перезапускаться после сброса лимита"
+			}
+			d.jour.Note("", g.Label+": "+verb)
+			d.sup.Wake()
 			d.render(d.sup.Status())
 		})
 	}
 	if len(goals) == 0 {
-		if _, err := win.AddLabel("Целей не найдено. Проверьте, что Codex залогинен."); err != nil {
-			return err
-		}
+		_, _ = win.AddLabel("Целей не найдено. Проверьте, что Codex залогинен.")
 	}
 
-	logBtn, _ := win.AddButton("Открыть журнал")
+	// The log, in the window. This is the whole point of the run: seeing what
+	// the model does while it works unattended.
+	_, _ = win.AddLabel("Журнал:")
+	d.log, _ = win.AddTextView(240)
+
+	logBtn, _ := win.AddButton("Открыть папку журналов")
 	logBtn.Clicked.On(d.app.Scope(), func(gw.ClickInfo) { openPath(d.jour.Path()) })
 
 	hideBtn, _ := win.AddButton("Свернуть в трей")
@@ -146,27 +153,27 @@ func (d *desktop) build() error {
 
 	d.buildTray()
 
-	// Closing the window hides it to the tray — the work keeps running. Only
-	// when there is no tray does closing mean quitting, since otherwise there
-	// would be no way back.
+	// The close button hides to the tray, so a stray click never loses the run.
+	// Only without a tray does closing quit, since then there is no way back.
 	win.Closing.On(d.app.Scope(), func(req *gw.CloseRequest) {
 		if d.hasTray {
 			req.CancelClose()
 			d.win.Hide()
+			d.jour.Note("", "окно свёрнуто в трей — наблюдение продолжается")
 			return
 		}
 		d.quit()
 	})
 
 	d.render(d.sup.Status())
+	d.refreshLog()
 	return nil
 }
 
 func (d *desktop) buildTray() {
 	show := gw.NewMenuItem("Показать окно")
-	openLog := gw.NewMenuItem("Открыть журнал")
+	openLog := gw.NewMenuItem("Открыть папку журналов")
 	quit := gw.NewMenuItem("Выйти")
-
 	tray, err := d.app.NewTrayIcon("crescent", show, openLog, gw.Separator(), quit)
 	if err != nil {
 		return
@@ -181,11 +188,23 @@ func (d *desktop) buildTray() {
 // render reflects a status snapshot into the window and the tray tooltip.
 func (d *desktop) render(s supervisor.Status) {
 	line := s.Line()
-	d.status.Text.Set(line)
+	d.status.Text.Set("Состояние: " + line)
 	d.counts.Text.Set(fmt.Sprintf("Закреплено целей: %d  •  перезапусков: %d",
 		d.pins.Count(), s.Restarts))
 	if d.hasTray {
 		d.tray.Tooltip.Set("crescent — " + line)
+	}
+}
+
+func (d *desktop) pollLog() {
+	for range time.Tick(700 * time.Millisecond) {
+		d.app.QueueUpdate(d.refreshLog)
+	}
+}
+
+func (d *desktop) refreshLog() {
+	if d.log != nil {
+		d.log.SetText(d.jour.Tail(200))
 	}
 }
 
@@ -198,7 +217,6 @@ func (d *desktop) quit() {
 	d.app.Quit()
 }
 
-// openPath opens a folder in the system file manager, best-effort.
 func openPath(path string) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {

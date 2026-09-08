@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -120,6 +121,20 @@ func (j *Journal) fileFor(threadID string) *os.File {
 
 // Path returns the directory, for pointing a user at it.
 func (j *Journal) Path() string { return j.dir }
+
+// Tail returns roughly the last n lines of the combined feed, so the window can
+// show recent activity without the user leaving the app.
+func (j *Journal) Tail(n int) string {
+	data, err := os.ReadFile(filepath.Join(j.dir, "all.log"))
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
+}
 
 // Close flushes and closes every file.
 func (j *Journal) Close() {
