@@ -220,12 +220,16 @@ func (s *Supervisor) Paused() bool {
 	return s.paused
 }
 
-// prove records one piece of established fact, stamped with the moment it was
-// established. Anything not proved here decays into red on its own.
+// prove records established facts. Each Fact carries its own timestamp, set by
+// whoever established it — never by anyone else, or one live proof would keep
+// the others alive without checking them.
 func (s *Supervisor) prove(f func(*Evidence)) {
 	s.mu.Lock()
 	f(&s.status.Evidence)
-	s.status.Evidence.At = time.Now()
+	// Local truths are read straight from their source, so they are current by
+	// construction and need no timestamp at all.
+	s.status.Evidence.Paused = s.paused
+	s.status.Evidence.Pinned = s.pins.Count() > 0
 	snap := s.status
 	cb := s.onChange
 	s.mu.Unlock()
@@ -234,23 +238,25 @@ func (s *Supervisor) prove(f func(*Evidence)) {
 	}
 }
 
+// now is a helper for stamping a fact at the moment it is established.
+func fact(ok bool) Fact { return Fact{OK: ok, At: time.Now()} }
+
 // heartbeat keeps the evidence fresh. It has to run faster than evidence
 // expires, or a healthy system would flicker red between passes.
 func (s *Supervisor) heartbeat(ctx context.Context) {
-	tick := time.NewTicker(EvidenceMaxAge / 3)
+	tick := time.NewTicker(LivenessMaxAge / 3)
 	defer tick.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			pingCtx, cancel := context.WithTimeout(ctx, EvidenceMaxAge)
+			pingCtx, cancel := context.WithTimeout(ctx, LivenessMaxAge)
 			err := s.client.Ping(pingCtx)
 			cancel()
-			s.prove(func(e *Evidence) {
-				e.ServerAlive = err == nil
-				e.Pinned = s.pins.Count() > 0
-			})
+			// The heartbeat proves liveness and nothing else. It must not
+			// touch any other fact's timestamp.
+			s.prove(func(e *Evidence) { e.ServerAlive = fact(err == nil) })
 		}
 	}
 }
@@ -338,14 +344,13 @@ func (s *Supervisor) Run(ctx context.Context) error {
 
 		limits, err := s.client.RateLimitsWithRetry(ctx, 3)
 		s.prove(func(e *Evidence) {
-			e.LimitChecked = true
-			e.LimitKnown = err == nil
-			e.Online = err == nil
+			e.LimitChecked = fact(true)
+			e.Online = fact(err == nil)
 			if err == nil {
 				limited, _ := limits.Exhausted()
-				e.LimitOK = !limited
+				e.LimitOK = fact(!limited)
 			} else {
-				e.LimitOK = false
+				e.LimitOK = fact(false)
 			}
 		})
 		if err != nil {
@@ -393,7 +398,7 @@ func (s *Supervisor) restartPinned(ctx context.Context) {
 		s.status.Running = running
 		s.mu.Unlock()
 		// Movement is a fact about the goals, established this pass.
-		s.prove(func(e *Evidence) { e.GoalsMoving = running > 0 })
+		s.prove(func(e *Evidence) { e.GoalsMoving = fact(running > 0) })
 	}()
 
 	for _, id := range s.pins.IDs() {
@@ -443,6 +448,7 @@ func (s *Supervisor) awaitClosedApp(ctx context.Context) bool {
 	if !running {
 		return true
 	}
+	s.prove(func(e *Evidence) { e.WaitingApp = true })
 	s.set(StateWaitingApp, "закройте "+name+" целиком", time.Time{})
 	s.note("жду закрытия приложения " + name)
 	for {
@@ -451,6 +457,7 @@ func (s *Supervisor) awaitClosedApp(ctx context.Context) bool {
 			return false
 		case <-time.After(3 * time.Second):
 			if r, _ := codexcli.AppRunning(); !r {
+				s.prove(func(e *Evidence) { e.WaitingApp = false })
 				s.note("приложение закрыто — продолжаю")
 				return true
 			}

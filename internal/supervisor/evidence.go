@@ -2,77 +2,118 @@ package supervisor
 
 import "time"
 
-// EvidenceMaxAge is how long a proof stays good. Past this the lamp goes red on
-// its own, with nobody updating anything.
-const EvidenceMaxAge = 10 * time.Second
+// How long each kind of proof stays good. A fact's life must exceed the
+// interval at which it is refreshed, or a healthy system flickers red; and it
+// must be short enough that a stopped refresher is noticed quickly.
+const (
+	// LivenessMaxAge covers the heartbeat, which runs every few seconds.
+	LivenessMaxAge = 10 * time.Second
+	// SurveyMaxAge covers what the main pass establishes: the account limit and
+	// whether goals are moving. The pass runs on the poll interval, so this is
+	// three times that, leaving room for one missed round.
+	SurveyMaxAge = 95 * time.Second
+)
 
-// Evidence is what crescent has actually established about the work, each item
-// with the moment it was established.
+// Fact is one thing crescent has established, and when.
 //
-// The lamp is derived from this and never stored, so it fails safe: the way a
-// train's air brake stops the train when the hose leaks, a supervisor that has
-// stopped gathering evidence — hung, crashed, deadlocked — turns the lamp red
-// without anyone noticing the failure first. Green must be earned every few
-// seconds; silence is a stop signal, not an assumption of health.
-type Evidence struct {
-	// At is when this evidence was gathered. The zero value is stale, so a
-	// Status nobody has filled in is red by construction.
+// Each fact carries its own timestamp, and this is the whole point. Sharing one
+// timestamp across all facts meant the heartbeat — which proves only that
+// app-server answers — kept refreshing the stamp for every other fact too, so
+// "goals are moving" stayed valid long after anyone checked, and stayed valid
+// through a pause. One healthy air line was holding the brakes off for the
+// entire train.
+type Fact struct {
+	OK bool
 	At time.Time
-
-	// ServerAlive: a JSON-RPC round trip to app-server completed. This proves
-	// both that the process lives and that we can still talk to it — a dead
-	// collector is indistinguishable from dead work, so both must be excluded.
-	ServerAlive bool
-	// LimitKnown: the account's usage was read successfully. Not knowing is
-	// not permission.
-	LimitKnown bool
-	// LimitOK: the account may work right now.
-	LimitOK bool
-	// Online: the last limits read reached the backend rather than failing on
-	// the network. Only meaningful once a read was attempted.
-	Online bool
-	// LimitChecked: a limits read has been attempted at all. Distinguishes
-	// "not asked yet" from "asked and failed" — reporting the first as the
-	// second was itself a small lie.
-	LimitChecked bool
-	// GoalsMoving: at least one pinned goal is actually advancing.
-	GoalsMoving bool
-	// Pinned: whether any goal is selected. With none, there is nothing to
-	// prove about movement and saying "no goal is moving" would mislead.
-	Pinned bool
 }
 
-// Fresh reports whether the evidence is recent enough to be trusted.
-func (e Evidence) Fresh(now time.Time) bool {
-	return !e.At.IsZero() && now.Sub(e.At) <= EvidenceMaxAge
+// Proved reports whether this fact is both true and recent enough to trust.
+// The zero Fact is never proved: nothing established is not the same as
+// established false, but both must keep the lamp off green.
+func (f Fact) Proved(now time.Time, maxAge time.Duration) bool {
+	return f.OK && !f.At.IsZero() && now.Sub(f.At) <= maxAge
 }
 
-// Lamp derives the traffic light from the evidence at a given moment.
+// Stale reports a fact that was once true but has not been refreshed. This is
+// the dangerous case — the collector stopped — and it is reported apart from a
+// fact that is simply false.
+func (f Fact) Stale(now time.Time, maxAge time.Duration) bool {
+	return !f.At.IsZero() && now.Sub(f.At) > maxAge
+}
+
+// Evidence is everything crescent has established about the work.
 //
-// Red by default, in the strict sense: every path that has not proved
-// something returns red or yellow, and green is reachable only when every
-// condition below has been established within EvidenceMaxAge.
+// The lamp is derived from this and never stored. The complete table of states,
+// checked in this order, with the lamp each produces:
+//
+//	условие                                      лампа   почему
+//	───────────────────────────────────────────────────────────────────────
+//	ничего ещё не установлено                    🔴      нет оснований
+//	сведения о сервере устарели                  🔴      сборщик молчит
+//	сервер не отвечает                           🔴      связи нет
+//	наблюдение на паузе                          🔴      работа остановлена
+//	ждём закрытия приложения                     🔴      работать нельзя
+//	ни одна цель не отмечена                     🟡      нечего вести
+//	лимит ещё не спрашивали                      🟡      неизвестно
+//	сведения о лимите устарели                   🟡      проверка отстала
+//	нет связи с OpenAI                           🟡      спросить не смогли
+//	лимит исчерпан                               🟡      ждём сброса
+//	сведения о движении целей устарели           🟡      обход отстал
+//	ни одна отмеченная цель не движется          🟡      работы нет
+//	всё выше установлено и свежо                 🟢      работа идёт
+//
+// Green is reachable only through the bottom row, which requires every fact
+// above to be individually true and individually fresh.
+type Evidence struct {
+	// Liveness, refreshed by the heartbeat.
+	ServerAlive Fact
+
+	// Local truths, read directly and therefore always current.
+	Paused     bool
+	WaitingApp bool
+	Pinned     bool
+
+	// Survey, refreshed by each pass of the main loop.
+	LimitChecked Fact
+	Online       Fact
+	LimitOK      Fact
+	GoalsMoving  Fact
+}
+
+// Lamp derives the traffic light and its explanation.
 func (e Evidence) Lamp(now time.Time) (Lamp, string) {
 	switch {
-	case !e.Fresh(now):
-		if e.At.IsZero() {
-			return LampRed, "нет данных о работе — ещё ничего не проверено"
-		}
-		return LampRed, "данные о работе устарели (" +
-			now.Sub(e.At).Round(time.Second).String() + ") — сбор информации остановился"
-	case !e.ServerAlive:
+	case e.ServerAlive.At.IsZero():
+		return LampRed, "ещё ничего не проверено"
+	case e.ServerAlive.Stale(now, LivenessMaxAge):
+		return LampRed, "проверка связи остановилась " +
+			now.Sub(e.ServerAlive.At).Round(time.Second).String() + " назад"
+	case !e.ServerAlive.Proved(now, LivenessMaxAge):
 		return LampRed, "нет связи с app-server"
+
+	// Deliberate stops are red: on pause nothing is running, and no amount of
+	// fresh evidence about the server changes that.
+	case e.Paused:
+		return LampRed, "наблюдение на паузе"
+	case e.WaitingApp:
+		return LampRed, "ждём, пока вы закроете приложение ChatGPT"
+
 	case !e.Pinned:
 		return LampYellow, "ни одна цель не отмечена"
-	case !e.LimitChecked:
+
+	case e.LimitChecked.At.IsZero():
 		return LampYellow, "лимит аккаунта ещё не проверялся"
-	case !e.Online:
+	case e.LimitChecked.Stale(now, SurveyMaxAge):
+		return LampYellow, "лимит не проверялся " +
+			now.Sub(e.LimitChecked.At).Round(time.Second).String()
+	case !e.Online.Proved(now, SurveyMaxAge):
 		return LampYellow, "нет связи с сервером OpenAI"
-	case !e.LimitKnown:
-		return LampYellow, "лимит аккаунта не удалось прочитать"
-	case !e.LimitOK:
+	case !e.LimitOK.Proved(now, SurveyMaxAge):
 		return LampYellow, "лимит аккаунта исчерпан"
-	case !e.GoalsMoving:
+
+	case e.GoalsMoving.Stale(now, SurveyMaxAge):
+		return LampYellow, "давно не проверяли, движутся ли цели"
+	case !e.GoalsMoving.Proved(now, SurveyMaxAge):
 		return LampYellow, "ни одна отмеченная цель не движется"
 	}
 	return LampGreen, "работа идёт"
