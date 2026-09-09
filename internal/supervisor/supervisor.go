@@ -71,24 +71,23 @@ func (l Lamp) Word() string {
 	}
 }
 
-// Lamp maps a status to the traffic light.
+// Lamp derives the traffic light from evidence gathered recently enough to
+// trust. Nothing proved, or proof gone stale, means red.
 func (s Status) Lamp() Lamp {
-	switch s.State {
-	case StateWorking:
-		return LampGreen
-	case StateFailing:
-		return LampRed
-	case StateLimited, StateWaitingApp, StateUnknownLimit:
-		return LampYellow
-	default:
-		return LampRed
-	}
+	lamp, _ := s.Evidence.Lamp(time.Now())
+	return lamp
+}
+
+// Why explains the lamp in one phrase.
+func (s Status) Why() string {
+	_, why := s.Evidence.Lamp(time.Now())
+	return why
 }
 
 // Headline is the whole state in one line: lamp, word, and why.
 func (s Status) Headline() string {
-	l := s.Lamp()
-	return l.Symbol() + "  " + l.Word() + " — " + s.Line()
+	lamp, why := s.Evidence.Lamp(time.Now())
+	return lamp.Symbol() + "  " + lamp.Word() + " — " + why
 }
 
 // Status is a snapshot for whoever is watching — a window, a tray, a terminal.
@@ -103,6 +102,10 @@ type Status struct {
 	Running  int
 	Restarts int
 	Since    time.Time
+
+	// Evidence is what has actually been proved about the work, and when. The
+	// lamp is derived from it rather than stored, so it fails safe.
+	Evidence Evidence
 }
 
 // Line is a one-line summary.
@@ -217,6 +220,41 @@ func (s *Supervisor) Paused() bool {
 	return s.paused
 }
 
+// prove records one piece of established fact, stamped with the moment it was
+// established. Anything not proved here decays into red on its own.
+func (s *Supervisor) prove(f func(*Evidence)) {
+	s.mu.Lock()
+	f(&s.status.Evidence)
+	s.status.Evidence.At = time.Now()
+	snap := s.status
+	cb := s.onChange
+	s.mu.Unlock()
+	if cb != nil {
+		cb(snap)
+	}
+}
+
+// heartbeat keeps the evidence fresh. It has to run faster than evidence
+// expires, or a healthy system would flicker red between passes.
+func (s *Supervisor) heartbeat(ctx context.Context) {
+	tick := time.NewTicker(EvidenceMaxAge / 3)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			pingCtx, cancel := context.WithTimeout(ctx, EvidenceMaxAge)
+			err := s.client.Ping(pingCtx)
+			cancel()
+			s.prove(func(e *Evidence) {
+				e.ServerAlive = err == nil
+				e.Pinned = s.pins.Count() > 0
+			})
+		}
+	}
+}
+
 // Wake makes the loop take a pass immediately instead of waiting out the poll
 // interval — used the moment a goal is pinned, so the effect is visible at once
 // rather than up to a poll later.
@@ -271,6 +309,7 @@ func (s *Supervisor) bumpRestart() {
 //  3. for every pinned, restartable goal that is not already running, push it.
 func (s *Supervisor) Run(ctx context.Context) error {
 	s.note("наблюдение запущено")
+	go s.heartbeat(ctx)
 	for {
 		if ctx.Err() != nil {
 			s.set(StateIdle, "остановлено", time.Time{})
@@ -298,6 +337,17 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		}
 
 		limits, err := s.client.RateLimitsWithRetry(ctx, 3)
+		s.prove(func(e *Evidence) {
+			e.LimitChecked = true
+			e.LimitKnown = err == nil
+			e.Online = err == nil
+			if err == nil {
+				limited, _ := limits.Exhausted()
+				e.LimitOK = !limited
+			} else {
+				e.LimitOK = false
+			}
+		})
 		if err != nil {
 			// Unknown is not permission — but it is also not a reset to wait
 			// for, and saying so was misleading.
@@ -342,6 +392,8 @@ func (s *Supervisor) restartPinned(ctx context.Context) {
 		s.mu.Lock()
 		s.status.Running = running
 		s.mu.Unlock()
+		// Movement is a fact about the goals, established this pass.
+		s.prove(func(e *Evidence) { e.GoalsMoving = running > 0 })
 	}()
 
 	for _, id := range s.pins.IDs() {

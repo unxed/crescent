@@ -227,8 +227,12 @@ func (d *desktop) buildTray() {
 }
 
 func (d *desktop) render(s supervisor.Status) {
+	// The lamp is recomputed here, from evidence and the current time, rather
+	// than taken from whatever the supervisor last reported. That is the whole
+	// point: if the supervisor stops updating — hung, crashed, deadlocked —
+	// nobody is left to set the lamp red, so the lamp has to go red by itself.
 	lamp := s.Lamp()
-	d.lamp.Text.Set(lamp.Symbol() + "   " + lamp.Word())
+	d.lamp.Text.Set(lamp.Symbol() + "   " + lamp.Word() + " — " + s.Why())
 	d.detail.Text.Set(s.Line())
 	d.counts.Text.Set(fmt.Sprintf("Отмечено целей: %d   •   перезапусков: %d",
 		d.pins.Count(), s.Restarts))
@@ -246,7 +250,12 @@ func (d *desktop) render(s supervisor.Status) {
 
 func (d *desktop) pollLog() {
 	for range time.Tick(700 * time.Millisecond) {
-		d.app.QueueUpdate(d.refreshLog)
+		d.app.QueueUpdate(func() {
+			d.refreshLog()
+			// Re-render on every tick so the lamp ages towards red on its own
+			// even when no status update ever arrives.
+			d.render(d.sup.Status())
+		})
 	}
 }
 

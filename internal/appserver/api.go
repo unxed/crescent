@@ -227,3 +227,11 @@ func (c *Client) StartTurn(ctx context.Context, threadID, text string) error {
 	})
 	return err
 }
+
+// Ping proves the server is alive and still talking to us, cheaply: a
+// one-element thread list is a local read with no backend round trip. It is
+// used as a heartbeat, so it must stay cheap.
+func (c *Client) Ping(ctx context.Context) error {
+	_, err := c.Call(ctx, "thread/list", map[string]any{"limit": 1})
+	return err
+}
