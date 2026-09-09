@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -27,6 +28,10 @@ type Journal struct {
 	perGoal  map[string]*os.File
 	labels   map[string]string
 	combined *os.File
+	// server is app-server's own diagnostics, kept apart from the human log.
+	// On a live run it produced 15768 lines against 96 of ours: mixed together,
+	// the journal a person reads was 99.4% machine noise.
+	server *os.File
 }
 
 // Dir is where journals live: a subdirectory of the user cache.
@@ -53,6 +58,7 @@ func Open() (*Journal, error) {
 		labels:  map[string]string{},
 	}
 	j.combined, _ = openRotating(filepath.Join(dir, "all.log"))
+	j.server, _ = openRotating(filepath.Join(dir, "app-server.log"))
 	return j, nil
 }
 
@@ -63,6 +69,32 @@ func (j *Journal) Label(threadID, label string) {
 	j.labels[threadID] = label
 	j.mu.Unlock()
 }
+
+// Server records one line of app-server's own logging. It goes to its own file,
+// and only warnings and errors reach the human journal: everything else is
+// INFO-level tracing that no person is reading.
+func (j *Journal) Server(line string) {
+	line = stripANSI(line)
+	if line == "" {
+		return
+	}
+	j.mu.Lock()
+	if j.server != nil {
+		fmt.Fprintf(j.server, "%s  %s\n", time.Now().Format("01-02 15:04:05"), line)
+	}
+	j.mu.Unlock()
+
+	if strings.Contains(line, " ERROR ") || strings.Contains(line, " WARN ") {
+		j.write("", "app-server", line)
+	}
+}
+
+// stripANSI removes the colour escapes tracing writes when it thinks it is
+// talking to a terminal. Rendered in a text view they came out as a wall of
+// unreadable boxes.
+func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
+
+var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
 
 // Note records a line crescent itself wants in the journal — a restart, a wait
 // — attributed to a goal.

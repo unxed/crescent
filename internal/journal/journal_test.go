@@ -95,3 +95,38 @@ func TestWhitespaceCollapsed(t *testing.T) {
 		t.Errorf("пробелы не схлопнуты: %q", got)
 	}
 }
+
+// tracing colours its output when it thinks it has a terminal; in a text view
+// those escapes rendered as a wall of unreadable boxes.
+func TestServerLinesStrippedAndSeparated(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	j, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.Server("\x1b[2m2026-09-09T01:59:34Z\x1b[0m \x1b[32mINFO\x1b[0m app_server.request")
+	j.Server("2026-09-09T02:00:00Z ERROR codex_app_server: всё плохо")
+	j.Close()
+
+	dir, _ := Dir()
+	srv, err := os.ReadFile(filepath.Join(dir, "app-server.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(srv), "\x1b") {
+		t.Error("ANSI-последовательности не вырезаны")
+	}
+	if !strings.Contains(string(srv), "app_server.request") {
+		t.Error("строка сервера не попала в свой файл")
+	}
+
+	// The human journal gets the error but not the INFO noise: on a live run
+	// that ratio was 15768 machine lines to 96 of ours.
+	all, _ := os.ReadFile(filepath.Join(dir, "all.log"))
+	if strings.Contains(string(all), "app_server.request") {
+		t.Error("INFO-шум сервера попал в человеческий журнал")
+	}
+	if !strings.Contains(string(all), "всё плохо") {
+		t.Error("ошибка сервера не доведена до человека")
+	}
+}

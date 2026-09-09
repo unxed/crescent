@@ -69,7 +69,7 @@ func runDesktop(codexPath, prompt string, verbose bool) error {
 	// Whatever the server says on stderr goes to the journal, always. It was
 	// wired only under -verbose, and that is why "app-server закрыл поток" came
 	// with no explanation: the explanation was being thrown away.
-	client.SetStderrSink(func(line string) { jour.Note("", "app-server: "+line) })
+	client.SetStderrSink(jour.Server)
 
 	thePins := pins.Load()
 	app, err := gw.NewApp()
