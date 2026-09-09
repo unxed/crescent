@@ -130,3 +130,32 @@ func TestServerLinesStrippedAndSeparated(t *testing.T) {
 		t.Error("ошибка сервера не доведена до человека")
 	}
 }
+
+// A quiet goal's log showed a day-old failure at the top, and newest-first
+// order made it look like it had just happened.
+func TestQuietGoalSaysNothingHappened(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	j, _ := Open()
+	j.Label("t1", "Konsole")
+	j.Record(appserver.Activity{ThreadID: "t1", Kind: "crescent", Text: "старая ошибка"})
+	j.Close()
+
+	// A second run that never touches this goal.
+	j2, _ := Open()
+	defer j2.Close()
+	j2.Label("t1", "Konsole") // the window registers names at startup
+	got := j2.TailOf("Konsole", 50)
+	if !strings.Contains(got, "ничего не происходило") {
+		t.Errorf("молчащая цель не помечена:\n%s", got)
+	}
+	if !strings.Contains(got, "старая ошибка") {
+		t.Error("прошлые записи потеряны")
+	}
+
+	// Once something does happen, the notice goes away.
+	j2.Record(appserver.Activity{ThreadID: "t1", Kind: "ход", Text: "начат"})
+	if strings.Contains(j2.TailOf("Konsole", 50), "ничего не происходило") {
+		t.Error("пометка осталась после появления событий")
+	}
+}

@@ -22,11 +22,16 @@ import (
 // known, so the directory is browsable. A combined feed interleaves everything
 // for a single-file overview.
 type Journal struct {
-	dir string
+	dir     string
+	started time.Time
 
-	mu       sync.Mutex
-	perGoal  map[string]*os.File
-	labels   map[string]string
+	mu      sync.Mutex
+	perGoal map[string]*os.File
+	labels  map[string]string
+	// touched records which goals produced anything during this run, so a
+	// quiet goal can be told from one that is simply showing history. Matching
+	// on a timestamp instead was fragile: two runs in the same second collided.
+	touched  map[string]bool
 	combined *os.File
 	// server is app-server's own diagnostics, kept apart from the human log.
 	// On a live run it produced 15768 lines against 96 of ours: mixed together,
@@ -53,9 +58,11 @@ func Open() (*Journal, error) {
 		return nil, err
 	}
 	j := &Journal{
+		started: time.Now(),
 		dir:     dir,
 		perGoal: map[string]*os.File{},
 		labels:  map[string]string{},
+		touched: map[string]bool{},
 	}
 	j.combined, _ = openRotating(filepath.Join(dir, "all.log"))
 	j.server, _ = openRotating(filepath.Join(dir, "app-server.log"))
@@ -124,6 +131,9 @@ func (j *Journal) write(threadID, kind, text string) {
 	if threadID != "" {
 		if f := j.fileFor(threadID); f != nil {
 			_, _ = f.WriteString(line)
+			if l := j.labels[threadID]; l != "" {
+				j.touched[l] = true
+			}
 		}
 	}
 	if j.combined != nil {
@@ -150,6 +160,12 @@ func (j *Journal) fileFor(threadID string) *os.File {
 	if err != nil {
 		return nil
 	}
+	// A session marker, written once per goal per run. Without it the newest
+	// line in a quiet goal's log is whatever happened days ago, and with
+	// newest-first order it sits at the top looking like current news — which
+	// is exactly how a day-old "app-server закрыл поток" was read as a live
+	// failure.
+	fmt.Fprintf(f, "%s  [сеанс] --- запуск crescent ---\n", j.started.Format("01-02 15:04:05"))
 	j.perGoal[threadID] = f
 	return f
 }
@@ -177,12 +193,26 @@ func (j *Journal) Views() []string {
 // TailOf returns the last n lines of one goal's log, or of the combined feed
 // when label is empty. This is what lets the window show a single goal's work
 // in full instead of the interleaved summary.
+//
+// When nothing happened for this goal during the current run, that is said in
+// so many words. Otherwise the newest line is whatever happened days ago and,
+// shown newest-first, reads as current news.
 func (j *Journal) TailOf(label string, n int) string {
 	name := "all.log"
 	if label != "" {
 		name = safeName(label) + ".log"
 	}
-	return tailFile(filepath.Join(j.dir, name), n)
+	text := tailFile(filepath.Join(j.dir, name), n)
+	if label == "" || text == "" {
+		return text
+	}
+	j.mu.Lock()
+	touched := j.touched[label]
+	j.mu.Unlock()
+	if !touched {
+		return "(за этот запуск для цели ничего не происходило — ниже прошлые записи)\n\n" + text
+	}
+	return text
 }
 
 // Tail returns roughly the last n lines of the combined feed, so the window can
