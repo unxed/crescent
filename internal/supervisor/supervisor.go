@@ -120,7 +120,7 @@ func (s Status) Line() string {
 	case StateUnknownLimit:
 		return "не удаётся спросить лимит у Codex — проверьте сеть; пробую снова"
 	case StatePaused:
-		return "пауза — цели не перезапускаются, пока не нажмёте «Продолжить»"
+		return "пауза — работа остановлена, наблюдение продолжается"
 	case StateNoGoals:
 		return "ни одна цель не отмечена галочкой"
 	case StateWaitingApp:
@@ -163,6 +163,13 @@ type Supervisor struct {
 	onChange func(Status)
 	wake     chan struct{}
 	paused   bool
+	// turns remembers the turn in progress for each thread, learned from the
+	// event stream. turn/interrupt cannot be issued without it.
+	turns map[string]string
+	// spend remembers each goal's token count and when it last changed, which
+	// is the only evidence that a model is working rather than merely marked
+	// active.
+	spend map[string]spendMark
 	// fails counts consecutive failed restarts, so the lamp can stop claiming
 	// success while nothing is getting through.
 	fails    int
@@ -198,18 +205,57 @@ func New(o Options) *Supervisor {
 		prompt:   prompt,
 		poll:     poll,
 		started:  map[string]time.Time{},
+		turns:    map[string]string{},
+		spend:    map[string]spendMark{},
 		onChange: o.OnChange,
 		wake:     make(chan struct{}, 1),
 		status:   Status{State: StateIdle, Since: time.Now()},
 	}
 }
 
-// SetPaused stops or resumes the loop without tearing it down, so the pinned
-// set and the connection survive a pause.
+// NoteTurn records the turn a thread is currently running, as seen in the event
+// stream.
+func (s *Supervisor) NoteTurn(threadID, turnID string) {
+	if threadID == "" || turnID == "" {
+		return
+	}
+	s.mu.Lock()
+	s.turns[threadID] = turnID
+	s.mu.Unlock()
+}
+
+// SetPaused stops or resumes the work.
+//
+// Pausing means stopping: turns in progress are interrupted, because a pause
+// that leaves them running keeps spending tokens while the person believes they
+// have stopped. Monitoring deliberately keeps going — the moment you have
+// stopped the work is the moment you most want to see that it really stopped,
+// and what the account limit is doing.
 func (s *Supervisor) SetPaused(p bool) {
 	s.mu.Lock()
 	s.paused = p
+	pinned := s.pins.IDs()
+	turns := make(map[string]string, len(s.turns))
+	for k, v := range s.turns {
+		turns[k] = v
+	}
 	s.mu.Unlock()
+
+	if p {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		for _, id := range pinned {
+			turn := turns[id]
+			if turn == "" {
+				continue // nothing running that we know of
+			}
+			if err := s.client.Interrupt(ctx, id, turn); err != nil {
+				s.note2(id, "остановить ход не удалось: "+err.Error())
+				continue
+			}
+			s.note2(id, "ход остановлен по паузе")
+		}
+	}
 	s.Wake()
 }
 
@@ -324,6 +370,10 @@ func (s *Supervisor) Run(ctx context.Context) error {
 
 		if s.Paused() {
 			s.set(StatePaused, "", time.Time{})
+			// Monitoring continues through a pause: the limit is still read and
+			// the goals are still surveyed, so the window keeps telling the
+			// truth about an account that is no longer being spent.
+			s.survey(ctx)
 			if !s.sleep(ctx) {
 				return nil
 			}
@@ -386,6 +436,87 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			return nil
 		}
 	}
+}
+
+// spendMark is the last observed token count for a goal and when it moved.
+type spendMark struct {
+	Tokens  int64
+	Seconds int64
+	Moved   time.Time
+}
+
+// observeSpend records a goal's token count and reports whether it grew. Growth
+// is the proof that work is happening: a model that is thinking is billing
+// tokens while it thinks, so a goal that has spent nothing for minutes is not
+// working, whatever its status says.
+func (s *Supervisor) observeSpend(id, label string, goal appserver.Goal) (moving bool, note string) {
+	s.mu.Lock()
+	prev, seen := s.spend[id]
+	now := time.Now()
+	grew := seen && goal.TokensUsed > prev.Tokens
+	if !seen || grew {
+		s.spend[id] = spendMark{Tokens: goal.TokensUsed, Seconds: goal.TimeUsedSeconds, Moved: now}
+	} else {
+		s.spend[id] = spendMark{Tokens: goal.TokensUsed, Seconds: goal.TimeUsedSeconds, Moved: prev.Moved}
+	}
+	last := s.spend[id].Moved
+	s.mu.Unlock()
+
+	if grew {
+		return true, fmt.Sprintf("%s: +%d токенов (всего %d)",
+			label, goal.TokensUsed-prev.Tokens, goal.TokensUsed)
+	}
+	if seen && now.Sub(last) > ProgressMaxAge {
+		return false, fmt.Sprintf("%s: токены не тратятся %s (статус %s)",
+			label, now.Sub(last).Round(time.Minute), goal.Status)
+	}
+	return false, ""
+}
+
+// survey refreshes what is known without starting anything: the account limit
+// and whether the pinned goals are moving. Used while paused, so that stopping
+// the work does not also stop the watching.
+func (s *Supervisor) survey(ctx context.Context) {
+	limits, err := s.client.RateLimitsWithRetry(ctx, 1)
+	s.prove(func(e *Evidence) {
+		e.LimitChecked = fact(true)
+		e.Online = fact(err == nil)
+		if err == nil {
+			limited, _ := limits.Exhausted()
+			e.LimitOK = fact(!limited)
+		} else {
+			e.LimitOK = fact(false)
+		}
+	})
+
+	running, moving := 0, 0
+	var progress string
+	for _, id := range s.pins.IDs() {
+		goal, gerr := s.client.Goal(ctx, id)
+		if gerr != nil {
+			continue
+		}
+		if strings.EqualFold(goal.Status, appserver.StatusActive) {
+			running++
+		}
+		grew, note := s.observeSpend(id, s.pins.Label(id), goal)
+		if grew {
+			moving++
+			progress = note
+		}
+		if note != "" {
+			// Written to the goal's own log, so a goal that looked silent now
+			// says what it is or is not doing.
+			s.note2(id, note)
+		}
+	}
+	s.mu.Lock()
+	s.status.Running = running
+	s.mu.Unlock()
+	s.prove(func(e *Evidence) {
+		e.GoalsMoving = fact(moving > 0)
+		e.Progress = progress
+	})
 }
 
 // restartPinned pushes each pinned goal that has stopped. Status is re-read

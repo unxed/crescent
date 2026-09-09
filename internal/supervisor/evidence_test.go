@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -102,5 +103,59 @@ func TestUnknownAndFalseAreBothNotGreenButDiffer(t *testing.T) {
 
 	if whyUnknown == whyFailed {
 		t.Errorf("«не спрашивали» и «спросили и не смогли» звучат одинаково: %q", whyUnknown)
+	}
+}
+
+// A pause must stop the work, not merely stop restarting it — and monitoring
+// must survive it, because the moment you stop the work is the moment you most
+// want to see that it really stopped.
+func TestPauseInterruptsAndKeepsWatching(t *testing.T) {
+	now := time.Now()
+	e := full(now)
+	e.Paused = true
+
+	lamp, why := e.Lamp(now)
+	if lamp != LampRed {
+		t.Fatalf("пауза даёт %v, должна быть красной", lamp)
+	}
+	if !strings.Contains(why, "наблюдение продолжается") {
+		t.Errorf("не сказано, что наблюдение живо: %q", why)
+	}
+	// The survey facts stay fresh through a pause, so limits remain visible.
+	if !e.LimitChecked.Proved(now, SurveyMaxAge) || !e.Online.Proved(now, SurveyMaxAge) {
+		t.Error("на паузе сведения о лимите перестали быть свежими")
+	}
+}
+
+// The lie this rule exists to stop: a goal marked active with nothing actually
+// happening. Status "active" means Codex considers the goal started; only spent
+// tokens prove a model is working.
+func TestActiveWithoutSpendIsNotGreen(t *testing.T) {
+	now := time.Now()
+	e := full(now)
+	e.GoalsMoving = Fact{OK: false, At: now} // active, but no tokens moved
+
+	lamp, why := e.Lamp(now)
+	if lamp == LampGreen {
+		t.Fatal("зелёная лампа при цели, которая ничего не тратит")
+	}
+	if !strings.Contains(why, "токены не тратятся") {
+		t.Errorf("причина не названа по существу: %q", why)
+	}
+}
+
+// When work is real, the lamp says what the work was rather than a generic
+// phrase — the complaint was a green lamp with no concrete activity behind it.
+func TestGreenReportsWhatActuallyHappened(t *testing.T) {
+	now := time.Now()
+	e := full(now)
+	e.Progress = "Лунобот-1: +1420 токенов (всего 90210)"
+
+	lamp, why := e.Lamp(now)
+	if lamp != LampGreen {
+		t.Fatalf("лампа %v при доказанной работе", lamp)
+	}
+	if why != e.Progress {
+		t.Errorf("зелёная лампа не показывает конкретику: %q", why)
 	}
 }

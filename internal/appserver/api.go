@@ -235,3 +235,17 @@ func (c *Client) Ping(ctx context.Context) error {
 	_, err := c.Call(ctx, "thread/list", map[string]any{"limit": 1})
 	return err
 }
+
+// Interrupt stops a turn in progress.
+//
+// This is what a pause has to do: leaving the turn running means the account
+// keeps spending tokens while the person believes they stopped it. Both ids are
+// required by the protocol, and the turn id is only ever seen in the event
+// stream, so it must be remembered as it goes past.
+func (c *Client) Interrupt(ctx context.Context, threadID, turnID string) error {
+	_, err := c.Call(ctx, "turn/interrupt", map[string]any{
+		"threadId": threadID,
+		"turnId":   turnID,
+	})
+	return err
+}

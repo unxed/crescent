@@ -18,6 +18,7 @@ import (
 	"github.com/unxed/crescent/internal/pins"
 	"github.com/unxed/crescent/internal/single"
 	"github.com/unxed/crescent/internal/supervisor"
+	"github.com/unxed/winkeys"
 )
 
 // desktop is crescent with a face. The design target is a tired person at four
@@ -65,11 +66,10 @@ func runDesktop(codexPath, prompt string, verbose bool) error {
 		client.Close()
 		return err
 	}
-	client.SetActivitySink(func(a appserver.Activity) { jour.Record(a) })
+	client.SetStderrSink(jour.Server)
 	// Whatever the server says on stderr goes to the journal, always. It was
 	// wired only under -verbose, and that is why "app-server закрыл поток" came
 	// with no explanation: the explanation was being thrown away.
-	client.SetStderrSink(jour.Server)
 
 	thePins := pins.Load()
 	app, err := gw.NewApp()
@@ -85,6 +85,13 @@ func runDesktop(codexPath, prompt string, verbose bool) error {
 		OnChange: func(s supervisor.Status) {
 			app.QueueUpdate(func() { d.render(s) })
 		},
+	})
+
+	// Installed once the supervisor exists: the turn id appears only in this
+	// stream, and turn/interrupt cannot be issued without it.
+	client.SetActivitySink(func(a appserver.Activity) {
+		jour.Record(a)
+		d.sup.NoteTurn(a.ThreadID, a.TurnID)
 	})
 
 	fmt.Println("codex:", path)
@@ -184,11 +191,13 @@ func (d *desktop) build() error {
 	logBtn, _ := win.AddButton("Открыть папку журналов")
 	logBtn.Clicked.On(d.app.Scope(), func(gw.ClickInfo) { openPath(d.jour.Path()) })
 
-	hideBtn, _ := win.AddButton("Свернуть в трей")
-	hideBtn.Clicked.On(d.app.Scope(), func(gw.ClickInfo) { d.win.Hide() })
+	hideBtn, _ := win.AddButton("Свернуть в трей  (или Esc)")
+	hideBtn.Clicked.On(d.app.Scope(), func(gw.ClickInfo) { d.hideToTray() })
 
-	quitBtn, _ := win.AddButton("Выйти (остановить наблюдение)")
-	quitBtn.Clicked.On(d.app.Scope(), func(gw.ClickInfo) { d.quit() })
+	// No quit button. Closing, Esc and Alt+F4 all go to the tray, so the only
+	// way to actually stop is the tray menu — a deliberate act, not something
+	// a stray click can do while goals are running.
+	_, _ = win.AddLabel("Выход — правой кнопкой по иконке в трее.")
 
 	// Breathing room under the last button: it sat flush against the window
 	// edge and looked cut off.
@@ -196,19 +205,36 @@ func (d *desktop) build() error {
 
 	d.buildTray()
 
+	// Esc hides the window, the same as the close button and Alt+F4. Alt+F4
+	// reaches us as an ordinary close request from the window manager, so it
+	// needs nothing of its own.
+	win.KeyPressed().On(d.app.Scope(), func(k gw.Key) {
+		if k.KeyDown && k.VirtualKeyCode == winkeys.VK_ESCAPE {
+			d.hideToTray()
+		}
+	})
+
 	win.Closing.On(d.app.Scope(), func(req *gw.CloseRequest) {
 		if d.hasTray {
 			req.CancelClose()
-			d.win.Hide()
-			d.jour.Note("", "окно свёрнуто в трей — наблюдение продолжается")
+			d.hideToTray()
 			return
 		}
+		// Without a tray there would be no way back, so closing has to mean
+		// quitting; anything else would lose the window for good.
 		d.quit()
 	})
 
 	d.render(d.sup.Status())
 	d.refreshLog()
 	return nil
+}
+
+// noteTurn forwards a turn id to the supervisor once it exists.
+func (d *desktop) noteTurn(threadID, turnID string) {
+	if d.sup != nil {
+		d.sup.NoteTurn(threadID, turnID)
+	}
 }
 
 func (d *desktop) buildTray() {
@@ -294,6 +320,15 @@ func (d *desktop) refreshLog() {
 		}
 		d.viewBtn.Text.Set("Журнал: " + name + "   (нажмите, чтобы переключить)")
 	}
+}
+
+// hideToTray puts the window away without stopping anything.
+func (d *desktop) hideToTray() {
+	if !d.hasTray {
+		return // nowhere to hide to
+	}
+	d.win.Hide()
+	d.jour.Note("", "окно свёрнуто в трей — наблюдение продолжается")
 }
 
 func (d *desktop) quit() {

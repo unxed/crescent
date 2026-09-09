@@ -8,6 +8,10 @@ import "time"
 const (
 	// LivenessMaxAge covers the heartbeat, which runs every few seconds.
 	LivenessMaxAge = 10 * time.Second
+	// ProgressMaxAge is how long a goal may go without spending a token before
+	// crescent stops calling it working. A model that is thinking still bills
+	// tokens as it goes, so silence this long means it is not thinking.
+	ProgressMaxAge = 5 * time.Minute
 	// SurveyMaxAge covers what the main pass establishes: the account limit and
 	// whether goals are moving. The pass runs on the poll interval, so this is
 	// three times that, leaving room for one missed round.
@@ -77,7 +81,13 @@ type Evidence struct {
 	LimitChecked Fact
 	Online       Fact
 	LimitOK      Fact
-	GoalsMoving  Fact
+	// GoalsMoving: at least one pinned goal has actually spent tokens recently.
+	// Status "active" alone is not proof — it says Codex considers the goal
+	// started, not that a model is working — and a green lamp over an idle
+	// account is exactly the lie this design exists to prevent.
+	GoalsMoving Fact
+	// Progress says what that movement was, so the window can show it.
+	Progress string
 }
 
 // Lamp derives the traffic light and its explanation.
@@ -94,7 +104,7 @@ func (e Evidence) Lamp(now time.Time) (Lamp, string) {
 	// Deliberate stops are red: on pause nothing is running, and no amount of
 	// fresh evidence about the server changes that.
 	case e.Paused:
-		return LampRed, "наблюдение на паузе"
+		return LampRed, "работа остановлена вами (наблюдение продолжается)"
 	case e.WaitingApp:
 		return LampRed, "ждём, пока вы закроете приложение ChatGPT"
 
@@ -114,7 +124,10 @@ func (e Evidence) Lamp(now time.Time) (Lamp, string) {
 	case e.GoalsMoving.Stale(now, SurveyMaxAge):
 		return LampYellow, "давно не проверяли, движутся ли цели"
 	case !e.GoalsMoving.Proved(now, SurveyMaxAge):
-		return LampYellow, "ни одна отмеченная цель не движется"
+		return LampYellow, "цели числятся запущенными, но токены не тратятся"
+	}
+	if e.Progress != "" {
+		return LampGreen, e.Progress
 	}
 	return LampGreen, "работа идёт"
 }

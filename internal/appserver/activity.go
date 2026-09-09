@@ -12,8 +12,12 @@ import (
 // doing.
 type Activity struct {
 	ThreadID string
-	Kind     string // короткая метка: сообщение, команда, правка, размышление…
-	Text     string // одна строка, уже очищенная от переносов
+	// TurnID identifies the turn in progress. turn/interrupt needs it, so it
+	// has to be captured as the stream goes by: there is no way to ask for it
+	// afterwards.
+	TurnID string
+	Kind   string // короткая метка: сообщение, команда, правка, размышление…
+	Text   string // одна строка, уже очищенная от переносов
 }
 
 // baseNote carries the fields every streaming notification shares.
@@ -47,7 +51,7 @@ type item struct {
 func Interpret(method string, params json.RawMessage) (Activity, bool) {
 	var n baseNote
 	_ = json.Unmarshal(params, &n)
-	a := Activity{ThreadID: n.ThreadID}
+	a := Activity{ThreadID: n.ThreadID, TurnID: n.TurnID}
 
 	switch method {
 	case "item/completed", "item/started":
