@@ -234,11 +234,18 @@ func (j *Journal) Path() string { return j.dir }
 // reads the way the checkboxes do.
 func (j *Journal) Views() []string {
 	j.mu.Lock()
+	// Distinct labels. Two goals can carry the same name — a chat recreated
+	// under its old name leaves the dead thread pinned alongside the new one —
+	// and a repeated entry made the switcher stick: it finds the first match,
+	// steps to the next index, and lands on the same name for ever.
+	seen := map[string]bool{}
 	labels := make([]string, 0, len(j.labels))
 	for _, l := range j.labels {
-		if l != "" {
-			labels = append(labels, l)
+		if l == "" || seen[l] {
+			continue
 		}
+		seen[l] = true
+		labels = append(labels, l)
 	}
 	j.mu.Unlock()
 

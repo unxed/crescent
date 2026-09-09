@@ -91,3 +91,17 @@ func (c *Client) RateLimitsWithRetry(ctx context.Context, attempts int) (RateLim
 	}
 	return RateLimits{}, last
 }
+
+// IsThreadGone reports an error meaning the thread no longer exists.
+//
+// A chat deleted or recreated leaves its id pinned, and asking about it fails
+// the same way for ever. Recognising it is what lets crescent stop asking
+// instead of filling the journal with one line every few seconds.
+func IsThreadGone(err error) bool {
+	if err == nil {
+		return false
+	}
+	low := strings.ToLower(err.Error())
+	return strings.Contains(low, "thread not found") ||
+		strings.Contains(low, "no such thread")
+}

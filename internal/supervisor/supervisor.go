@@ -508,6 +508,25 @@ func (s *Supervisor) observeSpend(id, label string, goal appserver.Goal) (moving
 	return false, ""
 }
 
+// forgetIfGone unpins a goal whose thread no longer exists, and says so once.
+//
+// Without this a deleted chat stays pinned for ever: every pass asks about it,
+// every pass fails identically, and the journal fills with the same line while
+// the goal can never run again. Unpinning is the honest response — there is
+// nothing left to watch.
+func (s *Supervisor) forgetIfGone(id string, err error) bool {
+	if !appserver.IsThreadGone(err) {
+		return false
+	}
+	label := s.pins.Label(id)
+	if label == "" {
+		label = id
+	}
+	s.pins.Set(id, label, false)
+	s.note("цель «" + label + "» снята: её чат больше не существует")
+	return true
+}
+
 // survey refreshes what is known without starting anything: the account limit
 // and whether the pinned goals are moving. Used while paused, so that stopping
 // the work does not also stop the watching.
@@ -534,6 +553,7 @@ func (s *Supervisor) survey(ctx context.Context) {
 	for _, id := range s.pins.IDs() {
 		goal, gerr := s.client.Goal(ctx, id)
 		if gerr != nil {
+			s.forgetIfGone(id, gerr)
 			continue
 		}
 		if strings.EqualFold(goal.Status, appserver.StatusActive) {
@@ -605,6 +625,9 @@ func (s *Supervisor) restartPinned(ctx context.Context) {
 
 		goal, err := s.client.Goal(ctx, id)
 		if err != nil {
+			if s.forgetIfGone(id, err) {
+				continue
+			}
 			s.note2(id, "состояние не прочитано: "+err.Error())
 			continue
 		}

@@ -226,3 +226,33 @@ func TestLogRotatesWhileWriting(t *testing.T) {
 		t.Errorf("журнал занимает %d байт, больше двух пределов", total)
 	}
 }
+
+// A chat recreated under its old name leaves two pins with the same label. The
+// switcher lists labels, so a repeat made it stick: it matched the first entry,
+// stepped one along, and landed on the same name again — for ever.
+func TestViewsHaveNoRepeats(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	j, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+
+	j.Label("dead", "Konsole")
+	j.Label("live", "Konsole")
+	j.Label("other", "Лунобот-1")
+
+	views := j.Views()
+	seen := map[string]int{}
+	for _, v := range views {
+		seen[v]++
+	}
+	for name, n := range seen {
+		if n > 1 {
+			t.Errorf("%q встречается %d раза — переключатель залипнет", name, n)
+		}
+	}
+	if len(views) != 3 { // сводка + два различных имени
+		t.Errorf("видов %d, ожидалось 3: %q", len(views), views)
+	}
+}

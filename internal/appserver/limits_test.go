@@ -2,6 +2,7 @@ package appserver
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -57,5 +58,34 @@ func TestBucketFallsBackToItsIdentifier(t *testing.T) {
 	}
 	if got := (RateLimits{NormalModelSlug: "gpt-5.6-luna"}).Title(); got != "gpt-5.6-luna" {
 		t.Errorf("Title = %q", got)
+	}
+}
+
+// A deleted or recreated chat leaves its id pinned, and every request for it
+// fails the same way for ever. Recognising that is what lets crescent stop
+// asking instead of writing one identical line every few seconds — a live log
+// carried hundreds of them.
+func TestVanishedThreadIsRecognised(t *testing.T) {
+	gone := []error{
+		errors.New("thread/goal/get: thread not found: 01a04f59-3ac3-7790-9f25-a0bd6c10ca2b (code -32600)"),
+		errors.New("Thread Not Found"),
+		errors.New("no such thread"),
+	}
+	for _, err := range gone {
+		if !IsThreadGone(err) {
+			t.Errorf("не опознано как исчезнувший тред: %v", err)
+		}
+	}
+
+	// Everything else must keep its pin: a network blip is not a deletion.
+	stays := []error{
+		nil,
+		errors.New("failed to fetch codex rate limits"),
+		errors.New("thread 01a0 already has an active writer (code -32600)"),
+	}
+	for _, err := range stays {
+		if IsThreadGone(err) {
+			t.Errorf("цель была бы снята из-за временной ошибки: %v", err)
+		}
 	}
 }
