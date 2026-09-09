@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Limits were asked for from the first day and went unshown for weeks, so the
@@ -88,4 +89,40 @@ func TestVanishedThreadIsRecognised(t *testing.T) {
 			t.Errorf("цель была бы снята из-за временной ошибки: %v", err)
 		}
 	}
+}
+
+// The response repeats the same allowance under several names: the historical
+// "account" view and a "codex" bucket carry identical percentages and reset
+// times. Printing both stretched the window far past everything else in it.
+func TestIdenticalBucketsAreNotRepeated(t *testing.T) {
+	same := &RateLimitWindow{UsedPercent: 10, WindowDurationMins: 300,
+		ResetsAt: Timestamp{Time: mustTime("2026-09-09T17:36:00Z"), Valid: true}}
+
+	limits := RateLimits{Primary: same}
+	limits.Buckets = []RateLimits{
+		{LimitName: "codex", Primary: same}, // те же цифры
+		{LimitName: "gpt-reserve", Primary: &RateLimitWindow{UsedPercent: 0,
+			WindowDurationMins: 10080,
+			ResetsAt:           Timestamp{Time: mustTime("2026-09-09T12:56:00Z"), Valid: true}}},
+	}
+
+	got := limits.Summary()
+	if len(got) != 2 {
+		t.Fatalf("строк %d, ожидалось 2 (дубликат codex должен исчезнуть): %q", len(got), got)
+	}
+	joined := strings.Join(got, " | ")
+	if strings.Contains(joined, "codex") {
+		t.Errorf("повтор той же корзины остался: %s", joined)
+	}
+	if !strings.Contains(joined, "gpt-reserve") {
+		t.Errorf("корзина с другими цифрами потеряна: %s", joined)
+	}
+}
+
+func mustTime(s string) time.Time {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		panic(err)
+	}
+	return t
 }

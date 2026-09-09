@@ -36,6 +36,7 @@ type desktop struct {
 	detail   *gw.Label
 	counts   *gw.Label
 	limits   *gw.Label
+	limits2  *gw.Label
 	pauseBtn *gw.Button
 	viewBtn  *gw.Button
 	log      *gw.TextView
@@ -45,6 +46,9 @@ type desktop struct {
 	viewing string
 	tray    *gw.TrayIcon
 	hasTray bool
+
+	// rows lets the counters beside each goal be refreshed in place.
+	rows []goalRow
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
@@ -132,6 +136,7 @@ func (d *desktop) build() error {
 	d.detail, _ = win.AddLabel("")
 	d.counts, _ = win.AddLabel("")
 	d.limits, _ = win.AddLabel("")
+	d.limits2, _ = win.AddLabel("")
 	_, _ = win.AddLabel("────────────────────────────────────────────")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -170,6 +175,33 @@ func (d *desktop) build() error {
 	}
 	if len(goals) == 0 {
 		_, _ = win.AddLabel("Целей не найдено. Проверьте, что Codex залогинен.")
+	}
+
+	// Pins with no goal behind them still get a row. Without one they were
+	// counted but invisible: the window said four goals were pinned while
+	// showing three checkboxes, and the fourth could not be unpinned at all
+	// because there was nothing to click.
+	shown := map[string]bool{}
+	for _, g := range goals {
+		shown[g.ThreadID] = true
+	}
+	for _, id := range d.pins.IDs() {
+		if shown[id] {
+			continue
+		}
+		id, label := id, d.pins.Label(id)
+		box, err := win.AddCheckBox(label+"  — чат не найден, снимите галочку", true)
+		if err != nil {
+			return err
+		}
+		box.Toggled.On(d.app.Scope(), func(on bool) {
+			if on {
+				return // re-pinning a thread that does not exist helps nobody
+			}
+			d.pins.Set(id, label, false)
+			d.jour.Note("", label+": снята — чата с таким идентификатором нет")
+			d.render(d.sup.Status())
+		})
 	}
 
 	// A button that cycles the journal rather than a list of them: with only
@@ -245,6 +277,13 @@ func (d *desktop) noteTurn(threadID, turnID string) {
 	}
 }
 
+// goalRow ties a checkbox to the goal it stands for, so its label can carry
+// live counters.
+type goalRow struct {
+	id, label string
+	box       *gw.CheckBox
+}
+
 func (d *desktop) buildTray() {
 	show := gw.NewMenuItem("Показать окно")
 	openLog := gw.NewMenuItem("Открыть папку журналов")
@@ -275,10 +314,20 @@ func (d *desktop) render(s supervisor.Status) {
 	d.detail.Text.Set(s.Line())
 	d.counts.Text.Set(fmt.Sprintf("Отмечено целей: %d   •   перезапусков: %d   •   потрачено токенов: %d",
 		d.pins.Count(), s.Restarts, s.SpentSince))
-	if len(s.Limits) > 0 {
-		d.limits.Text.Set("Лимиты:  " + strings.Join(s.Limits, "   |   "))
-	} else {
+	// Split across two lines: one long line of limits stretched the window
+	// wider than everything else in it.
+	switch {
+	case len(s.Limits) == 0:
 		d.limits.Text.Set("Лимиты: ещё не прочитаны")
+		d.limits2.Text.Set("")
+	default:
+		half := (len(s.Limits) + 1) / 2
+		d.limits.Text.Set("Лимиты:  " + strings.Join(s.Limits[:half], "   |   "))
+		if half < len(s.Limits) {
+			d.limits2.Text.Set("         " + strings.Join(s.Limits[half:], "   |   "))
+		} else {
+			d.limits2.Text.Set("")
+		}
 	}
 	if d.pauseBtn != nil {
 		if d.sup.Paused() {
@@ -287,6 +336,21 @@ func (d *desktop) render(s supervisor.Status) {
 			d.pauseBtn.Text.Set("Пауза")
 		}
 	}
+	// Each goal shows its own token counter — the per-goal tokensUsed from
+	// thread/goal/get, which is a different number from the account limits
+	// above and the one the lamp is judged by.
+	for _, r := range d.rows {
+		text := r.label
+		if sp, ok := s.PerGoal[r.id]; ok {
+			text += fmt.Sprintf("  [%s]  %d токенов", sp.Status, sp.Tokens)
+			if !sp.LastSeen.IsZero() {
+				text += fmt.Sprintf(", событие %s назад",
+					time.Since(sp.LastSeen).Round(time.Second))
+			}
+		}
+		r.box.Text.Set(text)
+	}
+
 	if d.hasTray {
 		d.tray.Tooltip.Set("crescent " + lamp.Symbol() + " " + s.Line())
 	}

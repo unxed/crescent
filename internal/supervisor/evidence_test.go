@@ -159,3 +159,23 @@ func TestGreenReportsWhatActuallyHappened(t *testing.T) {
 		t.Errorf("зелёная лампа не показывает конкретику: %q", why)
 	}
 }
+
+// The same account can be driven from another machine. Then a goal really is
+// active, but this crescent has no part in it, receives no events and has
+// nothing to show — and a green lamp would be claiming credit for work it
+// cannot see. Status alone must never prove movement; only spent tokens or
+// events arriving here do.
+func TestActiveElsewhereIsNotOurWork(t *testing.T) {
+	now := time.Now()
+	e := full(now)
+	e.GoalsMoving = Fact{OK: false, At: now} // active, but nothing reached us
+	e.Progress = "Лунобот-1: числится запущенной, но событий сюда не приходит"
+
+	lamp, why := e.Lamp(now)
+	if lamp == LampGreen {
+		t.Fatalf("зелёная лампа при работе, которой мы не видим: %s", why)
+	}
+	if !strings.Contains(why, "токены не тратятся") {
+		t.Errorf("причина не объяснена: %q", why)
+	}
+}

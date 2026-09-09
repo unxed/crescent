@@ -153,14 +153,29 @@ func (r RateLimits) Title() string {
 	return "аккаунт"
 }
 
-// Summary renders every window of every bucket as short readable lines.
+// Summary renders the usage windows as short lines.
+//
+// Duplicates are dropped. The response repeats the same numbers under several
+// names — the historical "account" view and a "codex" bucket carry identical
+// percentages and reset times — and printing both stretched the window far past
+// the width of anything else in it.
 func (r RateLimits) Summary() []string {
 	var out []string
+	seen := map[string]bool{}
+
 	add := func(title string, b RateLimits) {
 		for _, w := range b.Windows() {
+			// Two buckets showing the same percentage at the same reset time
+			// are the same allowance under two names.
+			key := fmt.Sprintf("%s|%.1f|%s", w.Label(), w.UsedPercent, w.ResetsAt.Time)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+
 			line := fmt.Sprintf("%s %s: %.0f%%", title, w.Label(), w.UsedPercent)
 			if at, ok := w.ResetAt(); ok {
-				line += fmt.Sprintf(", сброс в %s", at.Local().Format("15:04"))
+				line += fmt.Sprintf(" до %s", at.Local().Format("15:04"))
 			}
 			out = append(out, line)
 		}

@@ -109,6 +109,9 @@ type Status struct {
 	// Spent is how many tokens the pinned goals have used, and how much of that
 	// arrived since crescent started watching.
 	Spent, SpentSince int64
+	// PerGoal is what each pinned goal has spent and when it last stirred, so
+	// the window can show it next to the goal instead of one opaque total.
+	PerGoal map[string]GoalSpend
 
 	// Evidence is what has actually been proved about the work, and when. The
 	// lamp is derived from it rather than stored, so it fails safe.
@@ -548,53 +551,73 @@ func (s *Supervisor) survey(ctx context.Context) {
 		}
 	})
 
+	s.proveMovement(ctx)
+}
+
+// proveMovement establishes whether any pinned goal is really working, and
+// counts what has been spent. Shared by the ordinary pass and by the paused
+// one, so both judge by the same evidence.
+func (s *Supervisor) proveMovement(ctx context.Context) {
 	running, moving := 0, 0
 	var progress string
+	perGoal := map[string]GoalSpend{}
+
 	for _, id := range s.pins.IDs() {
-		goal, gerr := s.client.Goal(ctx, id)
-		if gerr != nil {
-			s.forgetIfGone(id, gerr)
+		goal, err := s.client.Goal(ctx, id)
+		if err != nil {
+			s.forgetIfGone(id, err)
 			continue
 		}
+		label := s.pins.Label(id)
 		if strings.EqualFold(goal.Status, appserver.StatusActive) {
 			running++
 		}
-		grew, note := s.observeSpend(id, s.pins.Label(id), goal)
 
-		// Either kind of evidence counts: tokens spent, or anything at all
-		// coming out of the goal in the event stream.
+		grew, note := s.observeSpend(id, label, goal)
+
 		s.mu.Lock()
 		lastSeen := s.active[id]
 		s.mu.Unlock()
+		perGoal[id] = GoalSpend{Tokens: goal.TokensUsed, Seconds: goal.TimeUsedSeconds,
+			Status: goal.Status, LastSeen: lastSeen}
 		streaming := !lastSeen.IsZero() && time.Since(lastSeen) < ProgressMaxAge
 
-		if grew || streaming {
+		switch {
+		case grew:
 			moving++
-			if grew {
-				progress = note
-			} else if progress == "" {
-				progress = fmt.Sprintf("%s: работает (последнее событие %s назад)",
-					s.pins.Label(id), time.Since(lastSeen).Round(time.Second))
+			progress = note
+		case streaming:
+			moving++
+			if progress == "" {
+				progress = fmt.Sprintf("%s: работает (событие %s назад)",
+					label, time.Since(lastSeen).Round(time.Second))
 			}
-			note = "" // not idle after all; do not log the idle complaint
+		case strings.EqualFold(goal.Status, appserver.StatusActive):
+			// Active, but nothing is reaching us. The same account can be
+			// driven from another machine, and then the goal is genuinely
+			// running while this crescent has no part in it and no events to
+			// show. Saying "работает" here would claim credit for work we
+			// cannot see and cannot report.
+			if progress == "" {
+				progress = label + ": числится запущенной, но событий сюда не приходит"
+			}
 		}
-		if note != "" {
-			// Written to the goal's own log, so a goal that looked silent now
-			// says what it is or is not doing.
+		if note != "" && !grew && !streaming {
 			s.note2(id, note)
 		}
 	}
-	var total, since int64
+
+	var total int64
 	s.mu.Lock()
 	s.status.Running = running
+	s.status.PerGoal = perGoal
 	for _, m := range s.spend {
 		total += m.Tokens
 	}
 	if s.baseline == 0 && total > 0 {
-		s.baseline = total // first reading is the starting point, not spending
+		s.baseline = total
 	}
-	since = total - s.baseline
-	s.status.Spent, s.status.SpentSince = total, since
+	s.status.Spent, s.status.SpentSince = total, total-s.baseline
 	s.mu.Unlock()
 
 	s.prove(func(e *Evidence) {
@@ -607,14 +630,13 @@ func (s *Supervisor) survey(ctx context.Context) {
 // every pass, never remembered: a goal may have finished, been paused by hand,
 // or been taken over by the application between passes.
 func (s *Supervisor) restartPinned(ctx context.Context) {
-	running := 0
-	defer func() {
-		s.mu.Lock()
-		s.status.Running = running
-		s.mu.Unlock()
-		// Movement is a fact about the goals, established this pass.
-		s.prove(func(e *Evidence) { e.GoalsMoving = fact(running > 0) })
-	}()
+	// Movement is established by the survey, which asks for the evidence that
+	// actually proves work: tokens spent or events in the stream. Proving it
+	// here from the number of goals whose status says "active" was the weak
+	// test all over again — and it lit the lamp green over an account where
+	// nothing at all was happening, because a goal can be active on another
+	// machine sharing the same account.
+	defer s.proveMovement(ctx)
 
 	for _, id := range s.pins.IDs() {
 		if ctx.Err() != nil {
@@ -637,8 +659,7 @@ func (s *Supervisor) restartPinned(ctx context.Context) {
 		case !appserver.Restartable(goal.Status):
 			continue
 		case strings.EqualFold(goal.Status, appserver.StatusActive):
-			running++
-			continue // already moving
+			continue // already moving; counted by proveMovement
 		case time.Since(s.started[id]) < 2*time.Minute:
 			continue // just pushed; let the turn appear
 		}
@@ -705,6 +726,14 @@ func (s *Supervisor) note2(id, text string) { s.jour.Note(id, text) }
 
 // Snapshot lists the pinned goals with their current state, for a window to
 // render. It is a read: safe while Run is going.
+// GoalSpend is one goal's own counters, straight from thread/goal/get.
+type GoalSpend struct {
+	Tokens   int64
+	Seconds  int64
+	Status   string
+	LastSeen time.Time
+}
+
 type GoalView struct {
 	ThreadID string
 	Label    string
