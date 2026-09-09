@@ -93,10 +93,14 @@ func (s Status) Headline() string {
 
 // Status is a snapshot for whoever is watching — a window, a tray, a terminal.
 type Status struct {
-	State    State
-	Message  string
-	Until    time.Time // when a wait ends, if known
-	Pinned   int
+	State   State
+	Message string
+	Until   time.Time // when a wait ends, if known
+	Pinned  int
+	// Running is how many pinned goals Codex is already advancing on its own.
+	// Without it, "работает / перезапусков: 0" is indistinguishable from
+	// broken — which is exactly how it looked.
+	Running  int
 	Restarts int
 	Since    time.Time
 }
@@ -127,6 +131,12 @@ func (s Status) Line() string {
 		}
 		return "не удаётся запустить цели — смотрите журнал"
 	case StateWorking:
+		if s.Running > 0 && s.Running == s.Pinned {
+			return fmt.Sprintf("все %d целей идут сами — перезапускать нечего", s.Pinned)
+		}
+		if s.Running > 0 {
+			return fmt.Sprintf("идут сами: %d из %d; остальные жду перезапустить", s.Running, s.Pinned)
+		}
 		return fmt.Sprintf("веду %d целей", s.Pinned)
 	}
 	if s.Message != "" {
@@ -317,6 +327,13 @@ func (s *Supervisor) Run(ctx context.Context) error {
 // every pass, never remembered: a goal may have finished, been paused by hand,
 // or been taken over by the application between passes.
 func (s *Supervisor) restartPinned(ctx context.Context) {
+	running := 0
+	defer func() {
+		s.mu.Lock()
+		s.status.Running = running
+		s.mu.Unlock()
+	}()
+
 	for _, id := range s.pins.IDs() {
 		if ctx.Err() != nil {
 			return
@@ -335,6 +352,7 @@ func (s *Supervisor) restartPinned(ctx context.Context) {
 		case !appserver.Restartable(goal.Status):
 			continue
 		case strings.EqualFold(goal.Status, appserver.StatusActive):
+			running++
 			continue // already moving
 		case time.Since(s.started[id]) < 2*time.Minute:
 			continue // just pushed; let the turn appear
