@@ -47,3 +47,51 @@ func TestLabelSanitised(t *testing.T) {
 		t.Errorf("safeName оставил опасные символы: %q", got)
 	}
 }
+
+// Cutting a label's tail threw away the only thing that told two goals apart:
+// "Следовать инструкции Лунобот-1" and "…-2" differ in the last character.
+func TestLabelShortenedFromTheMiddle(t *testing.T) {
+	a := middle("Следовать инструкции Лунобот-1", 24)
+	b := middle("Следовать инструкции Лунобот-2", 24)
+	if a == b {
+		t.Fatalf("две разные цели выглядят одинаково: %q", a)
+	}
+	if !strings.HasSuffix(a, "1") || !strings.HasSuffix(b, "2") {
+		t.Errorf("номер потерян: %q / %q", a, b)
+	}
+}
+
+// "What is happening now" should not require scrolling to the bottom.
+func TestNewestLineComesFirst(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	j, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.Label("t1", "Konsole")
+	j.Record(appserver.Activity{ThreadID: "t1", Kind: "ход", Text: "первое"})
+	j.Record(appserver.Activity{ThreadID: "t1", Kind: "ход", Text: "второе"})
+	j.Close()
+
+	tail := j.TailOf("Konsole", 50)
+	first := strings.SplitN(tail, "\n", 2)[0]
+	if !strings.Contains(first, "второе") {
+		t.Errorf("сверху не самое новое:\n%s", tail)
+	}
+}
+
+// A command line pasted into the log brought its own indentation with it.
+func TestWhitespaceCollapsed(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	j, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.Label("t1", "Konsole")
+	j.Record(appserver.Activity{ThreadID: "t1", Kind: "команда", Text: "go   build    ./...\n\n  тест"})
+	j.Close()
+
+	if got := j.TailOf("Konsole", 10); !strings.Contains(got, "go build ./... тест") {
+		t.Errorf("пробелы не схлопнуты: %q", got)
+	}
+}

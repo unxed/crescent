@@ -36,6 +36,7 @@ type Client struct {
 	pending  map[int]chan rpcResponse
 	notify   func(method string, params json.RawMessage)
 	activity func(Activity)
+	stderrFn func(string)
 	closed   bool
 	closeErr error
 }
@@ -111,7 +112,7 @@ func Dial(ctx context.Context, o Options) (*Client, error) {
 	c.out.Buffer(make([]byte, 0, 256<<10), 64<<20)
 
 	go c.readLoop()
-	go drain(errPipe, o.Stderr)
+	go c.drainStderr(errPipe, o.Stderr)
 
 	// The handshake tells the server who is asking; without it later calls are
 	// rejected.
@@ -157,13 +158,31 @@ func (c *Client) Notify(method string, params any) error {
 	return err
 }
 
-func drain(r io.Reader, w io.Writer) {
+// drainStderr reads the server's diagnostics. Every line goes to the sink as
+// well as to any writer: when the server dies, its last words are the only
+// evidence of why.
+func (c *Client) drainStderr(r io.Reader, w io.Writer) {
 	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
 	for sc.Scan() {
+		line := sc.Text()
 		if w != nil {
-			fmt.Fprintln(w, sc.Text())
+			fmt.Fprintln(w, line)
+		}
+		c.mu.Lock()
+		fn := c.stderrFn
+		c.mu.Unlock()
+		if fn != nil && line != "" {
+			fn(line)
 		}
 	}
+}
+
+// SetStderrSink installs a callback for the server's diagnostic output.
+func (c *Client) SetStderrSink(fn func(string)) {
+	c.mu.Lock()
+	c.stderrFn = fn
+	c.mu.Unlock()
 }
 
 // readLoop dispatches replies to whoever is waiting and hands notifications to
@@ -193,7 +212,7 @@ func (c *Client) readLoop() {
 			ch <- msg
 		}
 	}
-	c.fail(errors.New("app-server закрыл поток"))
+	c.fail(errors.New("app-server завершился (см. строки app-server: выше)"))
 }
 
 func (c *Client) fail(err error) {

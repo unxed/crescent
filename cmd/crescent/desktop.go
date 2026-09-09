@@ -16,6 +16,7 @@ import (
 	"github.com/unxed/crescent/internal/appserver"
 	"github.com/unxed/crescent/internal/journal"
 	"github.com/unxed/crescent/internal/pins"
+	"github.com/unxed/crescent/internal/single"
 	"github.com/unxed/crescent/internal/supervisor"
 )
 
@@ -47,6 +48,14 @@ type desktop struct {
 }
 
 func runDesktop(codexPath, prompt string, verbose bool) error {
+	// One crescent at a time. Two of them take turns on the same threads and
+	// each sees the other's turn as "already has an active writer".
+	lock, holder, err := single.Acquire()
+	if err != nil {
+		return fmt.Errorf("%w — закройте тот экземпляр или снимите процесс %d", err, holder)
+	}
+	defer lock.Release()
+
 	client, path, err := connect(codexPath, verbose)
 	if err != nil {
 		return err
@@ -57,6 +66,10 @@ func runDesktop(codexPath, prompt string, verbose bool) error {
 		return err
 	}
 	client.SetActivitySink(func(a appserver.Activity) { jour.Record(a) })
+	// Whatever the server says on stderr goes to the journal, always. It was
+	// wired only under -verbose, and that is why "app-server закрыл поток" came
+	// with no explanation: the explanation was being thrown away.
+	client.SetStderrSink(func(line string) { jour.Note("", "app-server: "+line) })
 
 	thePins := pins.Load()
 	app, err := gw.NewApp()

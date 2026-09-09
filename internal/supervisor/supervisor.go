@@ -29,6 +29,10 @@ const (
 	// whether work is possible, usually because the limits request could not
 	// reach the backend. Saying "waiting for the reset" there was a lie.
 	StateUnknownLimit State = "не удалось узнать лимит"
+	// StateFailing: the loop is running but every attempt fails. Showing green
+	// here was the worst thing the window did — nothing worked and the lamp
+	// said everything was fine.
+	StateFailing State = "ошибки при запуске"
 )
 
 // Lamp is the traffic light: the one thing a tired person should be able to
@@ -72,6 +76,8 @@ func (s Status) Lamp() Lamp {
 	switch s.State {
 	case StateWorking:
 		return LampGreen
+	case StateFailing:
+		return LampRed
 	case StateLimited, StateWaitingApp, StateUnknownLimit:
 		return LampYellow
 	default:
@@ -115,6 +121,11 @@ func (s Status) Line() string {
 			return s.Message
 		}
 		return "ждёт, пока вы закроете приложение ChatGPT"
+	case StateFailing:
+		if s.Message != "" {
+			return "не удаётся запустить: " + s.Message
+		}
+		return "не удаётся запустить цели — смотрите журнал"
 	case StateWorking:
 		return fmt.Sprintf("веду %d целей", s.Pinned)
 	}
@@ -139,6 +150,10 @@ type Supervisor struct {
 	onChange func(Status)
 	wake     chan struct{}
 	paused   bool
+	// fails counts consecutive failed restarts, so the lamp can stop claiming
+	// success while nothing is getting through.
+	fails    int
+	lastFail string
 }
 
 // Options configure a supervisor.
@@ -283,6 +298,15 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		s.set(StateWorking, "", time.Time{})
 		s.restartPinned(ctx)
 
+		// After the pass, tell the truth about it: if nothing got through, the
+		// lamp must not stay green.
+		s.mu.Lock()
+		fails, why := s.fails, s.lastFail
+		s.mu.Unlock()
+		if fails > 0 {
+			s.set(StateFailing, why, time.Time{})
+		}
+
 		if !s.sleep(ctx) {
 			return nil
 		}
@@ -317,9 +341,16 @@ func (s *Supervisor) restartPinned(ctx context.Context) {
 		}
 		if err := s.client.Restart(ctx, id, s.prompt); err != nil {
 			s.note2(id, "запустить не удалось: "+err.Error())
+			s.mu.Lock()
+			s.fails++
+			s.lastFail = err.Error()
+			s.mu.Unlock()
 			continue
 		}
 		s.started[id] = time.Now()
+		s.mu.Lock()
+		s.fails, s.lastFail = 0, ""
+		s.mu.Unlock()
 		s.bumpRestart()
 		s.note2(id, "перезапущено (было "+goal.Status+")")
 	}

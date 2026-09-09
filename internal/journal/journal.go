@@ -79,7 +79,9 @@ func (j *Journal) write(threadID, kind, text string) {
 	if text == "" {
 		return
 	}
-	line := fmt.Sprintf("%s  [%s] %s\n", time.Now().Format("15:04:05"), kind, text)
+	text = collapse(text)
+	now := time.Now()
+	line := fmt.Sprintf("%s  [%s] %s\n", now.Format("01-02 15:04:05"), kind, text)
 
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -98,7 +100,7 @@ func (j *Journal) write(threadID, kind, text string) {
 			label = short(threadID)
 		}
 		fmt.Fprintf(j.combined, "%s  %-24s [%s] %s\n",
-			time.Now().Format("15:04:05"), short(label, 24), kind, text)
+			now.Format("01-02 15:04:05"), middle(label, 24), kind, text)
 	}
 }
 
@@ -166,6 +168,11 @@ func tailFile(path string, n int) string {
 	if len(lines) > n {
 		lines = lines[len(lines)-n:]
 	}
+	// Newest first: "what is happening now" is the question the pane is opened
+	// to answer, and it should not require scrolling to the bottom.
+	for i, j := 0, len(lines)-1; i < j; i, j = i+1, j-1 {
+		lines[i], lines[j] = lines[j], lines[i]
+	}
 	return strings.Join(lines, "\n")
 }
 
@@ -221,6 +228,27 @@ func safeName(s string) string {
 		name = "goal"
 	}
 	return name
+}
+
+// middle shortens a label from the middle, keeping both ends.
+//
+// Cutting the tail threw away the only thing that distinguished one goal from
+// another: "Следовать инструкции Лунобот-1" and "…-2" differ in the last
+// character, and both came out as "Следовать инструкции Лу…".
+func middle(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n || n < 5 {
+		return s
+	}
+	head := (n - 1) / 2
+	tail := n - 1 - head
+	return string(r[:head]) + "…" + string(r[len(r)-tail:])
+}
+
+// collapse squeezes runs of whitespace into single spaces: a command line
+// pasted into the log carried its own indentation and read as a mess.
+func collapse(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 func short(s string, n ...int) string {
