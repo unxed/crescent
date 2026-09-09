@@ -21,22 +21,78 @@ import (
 // Each thread gets its own file, named by a human-chosen label where one is
 // known, so the directory is browsable. A combined feed interleaves everything
 // for a single-file overview.
+// rotatingFile is an append-only log that rolls itself aside once it passes the
+// size cap.
+//
+// Rotation used to be checked only when the file was opened, so a process that
+// stays up for a day wrote into one file forever: a live run produced a 2 GB
+// app-server.log. The size has to be watched as it is written, not once at the
+// start.
+type rotatingFile struct {
+	path string
+	f    *os.File
+	size int64
+}
+
+func newRotatingFile(path string) (*rotatingFile, error) {
+	r := &rotatingFile{path: path}
+	return r, r.open()
+}
+
+func (r *rotatingFile) open() error {
+	f, err := os.OpenFile(r.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	r.f = f
+	if fi, err := f.Stat(); err == nil {
+		r.size = fi.Size()
+	}
+	return nil
+}
+
+// Write appends, rolling over when the cap is passed. One generation is kept,
+// so a log can never occupy more than twice the cap.
+func (r *rotatingFile) Write(p []byte) (int, error) {
+	if r == nil || r.f == nil {
+		return len(p), nil
+	}
+	if r.size+int64(len(p)) > maxLog {
+		_ = r.f.Close()
+		_ = os.Rename(r.path, r.path+".1")
+		r.size = 0
+		if err := r.open(); err != nil {
+			return 0, err
+		}
+	}
+	n, err := r.f.Write(p)
+	r.size += int64(n)
+	return n, err
+}
+
+func (r *rotatingFile) Close() error {
+	if r == nil || r.f == nil {
+		return nil
+	}
+	return r.f.Close()
+}
+
 type Journal struct {
 	dir     string
 	started time.Time
 
 	mu      sync.Mutex
-	perGoal map[string]*os.File
+	perGoal map[string]*rotatingFile
 	labels  map[string]string
 	// touched records which goals produced anything during this run, so a
 	// quiet goal can be told from one that is simply showing history. Matching
 	// on a timestamp instead was fragile: two runs in the same second collided.
 	touched  map[string]bool
-	combined *os.File
+	combined *rotatingFile
 	// server is app-server's own diagnostics, kept apart from the human log.
 	// On a live run it produced 15768 lines against 96 of ours: mixed together,
 	// the journal a person reads was 99.4% machine noise.
-	server *os.File
+	server *rotatingFile
 }
 
 // Dir is where journals live: a subdirectory of the user cache.
@@ -60,12 +116,12 @@ func Open() (*Journal, error) {
 	j := &Journal{
 		started: time.Now(),
 		dir:     dir,
-		perGoal: map[string]*os.File{},
+		perGoal: map[string]*rotatingFile{},
 		labels:  map[string]string{},
 		touched: map[string]bool{},
 	}
-	j.combined, _ = openRotating(filepath.Join(dir, "all.log"))
-	j.server, _ = openRotating(filepath.Join(dir, "app-server.log"))
+	j.combined, _ = newRotatingFile(filepath.Join(dir, "all.log"))
+	j.server, _ = newRotatingFile(filepath.Join(dir, "app-server.log"))
 	return j, nil
 }
 
@@ -130,7 +186,7 @@ func (j *Journal) write(threadID, kind, text string) {
 	// only, so a stray "goal.log" never appears.
 	if threadID != "" {
 		if f := j.fileFor(threadID); f != nil {
-			_, _ = f.WriteString(line)
+			_, _ = f.Write([]byte(line))
 			if l := j.labels[threadID]; l != "" {
 				j.touched[l] = true
 			}
@@ -148,7 +204,7 @@ func (j *Journal) write(threadID, kind, text string) {
 
 // fileFor returns the log for a thread, opening it on first use. Called with
 // the lock held.
-func (j *Journal) fileFor(threadID string) *os.File {
+func (j *Journal) fileFor(threadID string) *rotatingFile {
 	if f, ok := j.perGoal[threadID]; ok {
 		return f
 	}
@@ -156,7 +212,7 @@ func (j *Journal) fileFor(threadID string) *os.File {
 	if name == "" {
 		name = threadID
 	}
-	f, err := openRotating(filepath.Join(j.dir, safeName(name)+".log"))
+	f, err := newRotatingFile(filepath.Join(j.dir, safeName(name)+".log"))
 	if err != nil {
 		return nil
 	}
@@ -251,16 +307,6 @@ func (j *Journal) Close() {
 }
 
 const maxLog = 8 << 20
-
-// openRotating opens a log for appending, rolling it aside once it passes the
-// size cap so an unattended run of days cannot fill the disk. One generation is
-// kept.
-func openRotating(path string) (*os.File, error) {
-	if fi, err := os.Stat(path); err == nil && fi.Size() > maxLog {
-		_ = os.Rename(path, path+".1")
-	}
-	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-}
 
 // safeName turns a chat label into a filename that will not surprise anyone.
 func safeName(s string) string {

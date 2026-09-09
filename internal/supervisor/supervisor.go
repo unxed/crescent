@@ -177,6 +177,9 @@ type Supervisor struct {
 	// is the only evidence that a model is working rather than merely marked
 	// active.
 	spend map[string]spendMark
+	// active is when each thread last produced anything at all in the event
+	// stream, which proves work even when the token counter does not move.
+	active map[string]time.Time
 	// baseline is the token total when watching began, so the window can show
 	// what was spent under crescent rather than the lifetime total.
 	baseline int64
@@ -217,10 +220,27 @@ func New(o Options) *Supervisor {
 		started:  map[string]time.Time{},
 		turns:    map[string]string{},
 		spend:    map[string]spendMark{},
+		active:   map[string]time.Time{},
 		onChange: o.OnChange,
 		wake:     make(chan struct{}, 1),
 		status:   Status{State: StateIdle, Since: time.Now()},
 	}
+}
+
+// NoteActivity records that a thread produced something in the event stream.
+//
+// This is direct evidence of work, and it matters because tokensUsed is not
+// always filled in: a live run showed a goal executing commands, visible in its
+// own log, while the token count stayed at zero and the lamp therefore claimed
+// nothing was being spent. Anything the model does — a command, a message, a
+// turn event — proves it is working, whatever the counters say.
+func (s *Supervisor) NoteActivity(threadID string) {
+	if threadID == "" {
+		return
+	}
+	s.mu.Lock()
+	s.active[threadID] = time.Now()
+	s.mu.Unlock()
 }
 
 // NoteTurn records the turn a thread is currently running, as seen in the event
@@ -520,9 +540,23 @@ func (s *Supervisor) survey(ctx context.Context) {
 			running++
 		}
 		grew, note := s.observeSpend(id, s.pins.Label(id), goal)
-		if grew {
+
+		// Either kind of evidence counts: tokens spent, or anything at all
+		// coming out of the goal in the event stream.
+		s.mu.Lock()
+		lastSeen := s.active[id]
+		s.mu.Unlock()
+		streaming := !lastSeen.IsZero() && time.Since(lastSeen) < ProgressMaxAge
+
+		if grew || streaming {
 			moving++
-			progress = note
+			if grew {
+				progress = note
+			} else if progress == "" {
+				progress = fmt.Sprintf("%s: работает (последнее событие %s назад)",
+					s.pins.Label(id), time.Since(lastSeen).Round(time.Second))
+			}
+			note = "" // not idle after all; do not log the idle complaint
 		}
 		if note != "" {
 			// Written to the goal's own log, so a goal that looked silent now

@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -270,7 +271,7 @@ func short(s string, n int) string {
 // runRestart is the product in its smallest honest form: if the account may
 // work, push every stopped goal forward by one turn.
 func runRestart(codexPath string, dry bool, prompt string, verbose bool) error {
-	client, path, err := connect(codexPath, verbose)
+	client, path, err := connect(codexPath, verbose, false)
 	if err != nil {
 		return err
 	}
@@ -351,7 +352,7 @@ func runRestart(codexPath string, dry bool, prompt string, verbose bool) error {
 }
 
 // connect starts an app-server and completes the handshake.
-func connect(codexPath string, verbose bool) (*appserver.Client, string, error) {
+func connect(codexPath string, verbose, gui bool) (*appserver.Client, string, error) {
 	if codexPath != "" {
 		os.Setenv(codexcli.EnvCodex, codexPath)
 	}
@@ -359,16 +360,21 @@ func connect(codexPath string, verbose bool) (*appserver.Client, string, error) 
 	if path == "" {
 		return nil, "", fmt.Errorf("codex не найден; искал в %d местах, укажите путь через -codex", len(tried))
 	}
-	// The server's own log goes to the terminal by default, not only under
-	// -verbose. Discarding it was why a dying app-server left no explanation
-	// anywhere; -verbose now only raises the level.
+	// The server's log goes to the terminal only when there is a terminal to
+	// read it. In window mode it is captured by the journal instead, and
+	// writing it to stderr as well meant the detached process poured every line
+	// into crescent.out, which has no rotation: a live run reached 3.5 GB.
 	level := "info"
 	if verbose {
 		level = "debug"
 	}
+	var out io.Writer
+	if !gui {
+		out = os.Stderr
+	}
 	client, err := appserver.Dial(context.Background(), appserver.Options{
 		CodexPath: path,
-		Stderr:    os.Stderr,
+		Stderr:    out,
 		LogLevel:  level,
 	})
 	if err != nil {

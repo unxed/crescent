@@ -59,7 +59,7 @@ func runDesktop(codexPath, prompt string, verbose bool) error {
 	}
 	defer lock.Release()
 
-	client, path, err := connect(codexPath, verbose)
+	client, path, err := connect(codexPath, verbose, true)
 	if err != nil {
 		return err
 	}
@@ -94,6 +94,7 @@ func runDesktop(codexPath, prompt string, verbose bool) error {
 	client.SetActivitySink(func(a appserver.Activity) {
 		jour.Record(a)
 		d.sup.NoteTurn(a.ThreadID, a.TurnID)
+		d.sup.NoteActivity(a.ThreadID)
 	})
 
 	fmt.Println("codex:", path)

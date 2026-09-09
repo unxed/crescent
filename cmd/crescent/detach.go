@@ -25,7 +25,10 @@ func detachFromConsole(logPath string) bool {
 		return false
 	}
 
-	out, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	// Truncated, not appended: this file catches whatever the detached process
+	// prints before the journal takes over, and appending to it forever is how
+	// it reached gigabytes. One run's worth is all it is for.
+	out, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		out = nil
 	}

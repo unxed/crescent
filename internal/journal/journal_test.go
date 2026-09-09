@@ -191,3 +191,38 @@ func TestEveryLineCarriesADate(t *testing.T) {
 		}
 	}
 }
+
+// Rotation used to be checked only when a file was opened, so a process that
+// stays up all day wrote into one file forever: a live run left a 2 GB
+// app-server.log and a 3.5 GB crescent.out. The cap has to hold while writing.
+func TestLogRotatesWhileWriting(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	j, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	line := strings.Repeat("ш", 4096)
+	// Comfortably past the cap without opening the journal again.
+	for i := 0; i < (maxLog/len(line))+64; i++ {
+		j.Server(line)
+	}
+	j.Close()
+
+	dir, _ := Dir()
+	fi, err := os.Stat(filepath.Join(dir, "app-server.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Size() > maxLog {
+		t.Errorf("файл вырос до %d байт при пределе %d — ротация не сработала", fi.Size(), maxLog)
+	}
+	// One generation is kept, so the total can never exceed twice the cap.
+	prev, err := os.Stat(filepath.Join(dir, "app-server.log.1"))
+	if err != nil {
+		t.Fatalf("предыдущее поколение не сохранено: %v", err)
+	}
+	if total := fi.Size() + prev.Size(); total > 2*maxLog {
+		t.Errorf("журнал занимает %d байт, больше двух пределов", total)
+	}
+}
