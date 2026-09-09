@@ -186,6 +186,9 @@ type Supervisor struct {
 	// baseline is the token total when watching began, so the window can show
 	// what was spent under crescent rather than the lifetime total.
 	baseline int64
+	// broken holds goals Codex cannot write history for, with the reason. No
+	// number of restarts fixes that, so crescent stops trying and says so.
+	broken map[string]string
 	// startedAt is when watching began, used to give goals one grace period
 	// before a stuck "active" is judged stuck.
 	startedAt time.Time
@@ -230,8 +233,38 @@ func New(o Options) *Supervisor {
 		onChange:  o.OnChange,
 		wake:      make(chan struct{}, 1),
 		startedAt: time.Now(),
+		broken:    map[string]string{},
 		status:    Status{State: StateIdle, Since: time.Now()},
 	}
+}
+
+// NoteServerLine takes one line of app-server logging and, if it reports that a
+// thread's history cannot be written, remembers that the goal is beyond help.
+func (s *Supervisor) NoteServerLine(line string) {
+	if !appserver.IsHistoryDesynced(line) {
+		return
+	}
+	id := appserver.ThreadIDIn(line)
+	if id == "" {
+		return
+	}
+	s.mu.Lock()
+	_, known := s.broken[id]
+	s.broken[id] = "Codex не может записать историю этого треда"
+	s.mu.Unlock()
+
+	if !known {
+		s.note2(id, "перезапускать бесполезно: база истории Codex разошлась с файлом "+
+			"сессии. Закройте ChatGPT и уберите ~/.codex/thread_history_1.sqlite — "+
+			"она пересобирается из файлов сессий.")
+	}
+}
+
+// Broken reports why a goal cannot run, if it cannot.
+func (s *Supervisor) Broken(id string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.broken[id]
 }
 
 // NoteActivity records that a thread produced something in the event stream.
@@ -680,6 +713,9 @@ func (s *Supervisor) restartPinned(ctx context.Context) {
 			}
 			s.note2(id, "состояние не прочитано: "+err.Error())
 			continue
+		}
+		if why := s.Broken(id); why != "" {
+			continue // restarting cannot fix a store that refuses the write
 		}
 		switch {
 		case !goal.Set():

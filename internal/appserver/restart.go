@@ -2,6 +2,7 @@ package appserver
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -104,4 +105,33 @@ func IsThreadGone(err error) bool {
 	low := strings.ToLower(err.Error())
 	return strings.Contains(low, "thread not found") ||
 		strings.Contains(low, "no such thread")
+}
+
+// threadIDRe finds a thread id inside a server log line, so a diagnostic can be
+// filed against the goal it concerns instead of a общий поток.
+var threadIDRe = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
+
+// ThreadIDIn returns the thread id mentioned in a line, if any.
+func ThreadIDIn(line string) string {
+	return threadIDRe.FindString(line)
+}
+
+// ordinalRe matches the thread-store projection mismatch.
+var ordinalRe = regexp.MustCompile(`expected ordinal (\d+), got (\d+)`)
+
+// IsHistoryDesynced reports a thread whose history database has diverged from
+// its rollout file.
+//
+// Seen on a live machine, hundreds of times per thread and always off by one:
+//
+//	thread history projection for <id> expected ordinal 4330, got 4329
+//
+// The SQLite projection believes it has already applied a line that the rollout
+// file is offering again, so the write is refused, the turn is shut down from
+// inside Codex, and nothing runs. Restarting such a goal cannot help: every
+// turn dies the same way. Recognising it is what lets crescent stop trying and
+// say what is actually wrong.
+func IsHistoryDesynced(line string) bool {
+	return ordinalRe.MatchString(line) ||
+		strings.Contains(line, "is behind durable rollout")
 }

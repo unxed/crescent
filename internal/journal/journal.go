@@ -2,6 +2,7 @@ package journal
 
 import (
 	"fmt"
+	"github.com/unxed/crescent/internal/appserver"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -9,8 +10,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/unxed/crescent/internal/appserver"
 )
 
 // A Journal records what each goal's model is doing, so that a run left
@@ -147,6 +146,13 @@ func (j *Journal) Server(line string) {
 	}
 	j.mu.Unlock()
 
+	// A line that names a thread belongs in that goal's own log. Without this
+	// the diagnosis sat in the combined feed while the goal's log said nothing
+	// was happening — the answer was on disk and the screen showed silence.
+	if id := appserver.ThreadIDIn(line); id != "" {
+		j.write(id, "app-server", line)
+		return
+	}
 	if strings.Contains(line, " ERROR ") || strings.Contains(line, " WARN ") {
 		j.write("", "app-server", line)
 	}

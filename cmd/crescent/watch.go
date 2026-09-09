@@ -74,6 +74,11 @@ func runWatch(codexPath string, selectors []string, prompt string, verbose bool,
 		},
 	})
 
+	client.SetStderrSink(func(line string) {
+		jour.Server(line)
+		sup.NoteServerLine(line)
+	})
+
 	sigctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return sup.Run(sigctx)

@@ -126,3 +126,36 @@ func mustTime(s string) time.Time {
 	}
 	return t
 }
+
+// Lines taken verbatim from a live journal. Both goals failed the same way,
+// hundreds of times, always off by one: the SQLite projection believes it has
+// applied a line the rollout file is offering again, so the write is refused
+// and the turn is shut down from inside Codex. Restarting cannot fix it.
+func TestHistoryDesyncIsRecognised(t *testing.T) {
+	real := "WARN codex_thread_store::local::live_writer: failed to project durable " +
+		"rollout for 01a08207-cf5e-7631-90c3-3f8ac9c49a75: thread-store internal error: " +
+		"thread history projection for 01a08207-cf5e-7631-90c3-3f8ac9c49a75 " +
+		"expected ordinal 4330, got 4329"
+
+	if !IsHistoryDesynced(real) {
+		t.Error("расхождение истории треда не опознано")
+	}
+	if got := ThreadIDIn(real); got != "01a08207-cf5e-7631-90c3-3f8ac9c49a75" {
+		t.Errorf("идентификатор треда не извлечён: %q", got)
+	}
+	if !IsHistoryDesynced("thread history projection for X is behind durable rollout") {
+		t.Error("вторая форма расхождения не опознана")
+	}
+
+	// Ordinary noise must not be mistaken for it: a goal that is merely busy or
+	// briefly offline has to keep being restarted.
+	for _, line := range []string{
+		"WARN app_server.request{otel.name=\"thread/resume\"}",
+		"ERROR failed to fetch codex rate limits",
+		"thread 01a0 already has an active writer",
+	} {
+		if IsHistoryDesynced(line) {
+			t.Errorf("обычная ошибка принята за расхождение истории: %s", line)
+		}
+	}
+}

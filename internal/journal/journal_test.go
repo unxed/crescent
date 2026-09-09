@@ -256,3 +256,33 @@ func TestViewsHaveNoRepeats(t *testing.T) {
 		t.Errorf("видов %d, ожидалось 3: %q", len(views), views)
 	}
 }
+
+// The diagnosis sat in the combined feed all morning while each goal's own log
+// said nothing was happening. A server line that names a thread belongs in that
+// thread's log — that is where a person looks when a goal is not working.
+func TestServerLineGoesToTheGoalItNames(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	j, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.Label("01a08207-cf5e-7631-90c3-3f8ac9c49a75", "Лунобот-1")
+	j.Server("WARN codex_thread_store: failed to project durable rollout for " +
+		"01a08207-cf5e-7631-90c3-3f8ac9c49a75: expected ordinal 4330, got 4329")
+	j.Server("2026-09-09T08:54:34Z WARN codex_core: something with no thread at all")
+	j.Close()
+
+	dir, _ := Dir()
+	goal, err := os.ReadFile(filepath.Join(dir, "Лунобот-1.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(goal), "expected ordinal") {
+		t.Errorf("диагноз не попал в журнал своей цели:\n%s", goal)
+	}
+
+	all, _ := os.ReadFile(filepath.Join(dir, "all.log"))
+	if !strings.Contains(string(all), "no thread at all") {
+		t.Error("строка без треда потеряна")
+	}
+}

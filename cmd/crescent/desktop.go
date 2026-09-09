@@ -72,10 +72,9 @@ func runDesktop(codexPath, prompt string, verbose bool) error {
 		client.Close()
 		return err
 	}
-	client.SetStderrSink(jour.Server)
-	// Whatever the server says on stderr goes to the journal, always. It was
-	// wired only under -verbose, and that is why "app-server закрыл поток" came
-	// with no explanation: the explanation was being thrown away.
+	// Installed below, once the supervisor exists: a line naming a thread has
+	// to reach both the journal and the supervisor, which decides whether the
+	// goal is worth restarting at all.
 
 	thePins := pins.Load()
 	app, err := gw.NewApp()
@@ -95,6 +94,10 @@ func runDesktop(codexPath, prompt string, verbose bool) error {
 
 	// Installed once the supervisor exists: the turn id appears only in this
 	// stream, and turn/interrupt cannot be issued without it.
+	client.SetStderrSink(func(line string) {
+		jour.Server(line)
+		d.sup.NoteServerLine(line)
+	})
 	client.SetActivitySink(func(a appserver.Activity) {
 		jour.Record(a)
 		d.sup.NoteTurn(a.ThreadID, a.TurnID)
