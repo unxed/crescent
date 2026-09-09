@@ -17,7 +17,6 @@ import (
 	"github.com/unxed/crescent/internal/appserver"
 	"github.com/unxed/crescent/internal/journal"
 	"github.com/unxed/crescent/internal/pins"
-	"github.com/unxed/crescent/internal/single"
 	"github.com/unxed/crescent/internal/supervisor"
 	"github.com/unxed/winkeys"
 )
@@ -57,9 +56,9 @@ type desktop struct {
 func runDesktop(codexPath, prompt string, verbose bool) error {
 	// One crescent at a time. Two of them take turns on the same threads and
 	// each sees the other's turn as "already has an active writer".
-	lock, holder, err := single.Acquire()
+	lock, err := holdSingleInstance()
 	if err != nil {
-		return fmt.Errorf("%w — закройте тот экземпляр или снимите процесс %d", err, holder)
+		return err
 	}
 	defer lock.Release()
 

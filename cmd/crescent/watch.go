@@ -21,6 +21,12 @@ import (
 // the supervisor and prints its status changes. Ctrl-C stops watching; the
 // goals themselves keep whatever state they were in.
 func runWatch(codexPath string, selectors []string, prompt string, verbose bool, poll time.Duration) error {
+	lock, err := holdSingleInstance()
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+
 	client, path, err := connect(codexPath, verbose, false)
 	if err != nil {
 		return err

@@ -20,6 +20,7 @@ import (
 	"github.com/unxed/crescent/internal/appserver"
 	"github.com/unxed/crescent/internal/codexcli"
 	"github.com/unxed/crescent/internal/journal"
+	"github.com/unxed/crescent/internal/single"
 )
 
 func main() {
@@ -271,6 +272,13 @@ func short(s string, n int) string {
 // runRestart is the product in its smallest honest form: if the account may
 // work, push every stopped goal forward by one turn.
 func runRestart(codexPath string, dry bool, prompt string, verbose bool) error {
+	if !dry {
+		lock, err := holdSingleInstance()
+		if err != nil {
+			return err
+		}
+		defer lock.Release()
+	}
 	client, path, err := connect(codexPath, verbose, false)
 	if err != nil {
 		return err
@@ -349,6 +357,20 @@ func runRestart(codexPath string, dry bool, prompt string, verbose bool) error {
 		fmt.Println("\n(-dry-run: ничего не запускалось)")
 	}
 	return nil
+}
+
+// holdSingleInstance takes the one-crescent-at-a-time lock for any mode that
+// drives goals.
+//
+// It was taken only by the window, so -watch and -restart could run alongside
+// it — and two crescents take turns on the same threads, which is one way a
+// rollout file ends up with writes the history database did not expect.
+func holdSingleInstance() (*single.Lock, error) {
+	lock, holder, err := single.Acquire()
+	if err != nil {
+		return nil, fmt.Errorf("%w — закройте тот экземпляр или снимите процесс %d", err, holder)
+	}
+	return lock, nil
 }
 
 // connect starts an app-server and completes the handshake.
