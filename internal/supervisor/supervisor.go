@@ -186,6 +186,9 @@ type Supervisor struct {
 	// baseline is the token total when watching began, so the window can show
 	// what was spent under crescent rather than the lifetime total.
 	baseline int64
+	// startedAt is when watching began, used to give goals one grace period
+	// before a stuck "active" is judged stuck.
+	startedAt time.Time
 	// fails counts consecutive failed restarts, so the lamp can stop claiming
 	// success while nothing is getting through.
 	fails    int
@@ -215,18 +218,19 @@ func New(o Options) *Supervisor {
 		prompt = "Продолжай работу над текущей целью."
 	}
 	return &Supervisor{
-		client:   o.Client,
-		pins:     o.Pins,
-		jour:     o.Journal,
-		prompt:   prompt,
-		poll:     poll,
-		started:  map[string]time.Time{},
-		turns:    map[string]string{},
-		spend:    map[string]spendMark{},
-		active:   map[string]time.Time{},
-		onChange: o.OnChange,
-		wake:     make(chan struct{}, 1),
-		status:   Status{State: StateIdle, Since: time.Now()},
+		client:    o.Client,
+		pins:      o.Pins,
+		jour:      o.Journal,
+		prompt:    prompt,
+		poll:      poll,
+		started:   map[string]time.Time{},
+		turns:     map[string]string{},
+		spend:     map[string]spendMark{},
+		active:    map[string]time.Time{},
+		onChange:  o.OnChange,
+		wake:      make(chan struct{}, 1),
+		startedAt: time.Now(),
+		status:    Status{State: StateIdle, Since: time.Now()},
 	}
 }
 
@@ -554,6 +558,30 @@ func (s *Supervisor) survey(ctx context.Context) {
 	s.proveMovement(ctx)
 }
 
+// isMoving reports whether a goal has shown any sign of life recently.
+//
+// A goal can sit in status "active" while nothing runs: a turn that died or was
+// interrupted leaves the state behind, and Codex does not start it again.
+// Skipping every active goal meant crescent looked at exactly the situation it
+// exists to fix and decided there was nothing to do — the log went silent for
+// hours with "все цели идут сами". Status says what Codex believes; spend and
+// events say what is happening.
+func (s *Supervisor) isMoving(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if last := s.active[id]; !last.IsZero() && time.Since(last) < ProgressMaxAge {
+		return true
+	}
+	if m, ok := s.spend[id]; ok && !m.Moved.IsZero() && time.Since(m.Moved) < ProgressMaxAge {
+		return true
+	}
+	// Nothing observed yet in this run: give it one grace period from start,
+	// so a goal genuinely working elsewhere is not restarted the instant
+	// crescent opens.
+	return time.Since(s.startedAt) < ProgressMaxAge
+}
+
 // proveMovement establishes whether any pinned goal is really working, and
 // counts what has been spent. Shared by the ordinary pass and by the paused
 // one, so both judge by the same evidence.
@@ -658,8 +686,8 @@ func (s *Supervisor) restartPinned(ctx context.Context) {
 			continue
 		case !appserver.Restartable(goal.Status):
 			continue
-		case strings.EqualFold(goal.Status, appserver.StatusActive):
-			continue // already moving; counted by proveMovement
+		case strings.EqualFold(goal.Status, appserver.StatusActive) && s.isMoving(id):
+			continue // really moving: spending tokens or producing events
 		case time.Since(s.started[id]) < 2*time.Minute:
 			continue // just pushed; let the turn appear
 		}
@@ -676,7 +704,11 @@ func (s *Supervisor) restartPinned(ctx context.Context) {
 		s.fails, s.lastFail = 0, ""
 		s.mu.Unlock()
 		s.bumpRestart()
-		s.note2(id, "перезапущено (было "+goal.Status+")")
+		why := "было " + goal.Status
+		if strings.EqualFold(goal.Status, appserver.StatusActive) {
+			why = "числилась запущенной, но не подавала признаков жизни"
+		}
+		s.note2(id, "перезапущено ("+why+")")
 	}
 }
 

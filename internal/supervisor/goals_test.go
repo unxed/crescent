@@ -3,6 +3,7 @@ package supervisor
 import (
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/unxed/crescent/internal/appserver"
 )
@@ -83,5 +84,52 @@ func TestFreshestGoalComesFirst(t *testing.T) {
 	})
 	if got[0].ThreadID != "new" {
 		t.Errorf("сверху %q, ожидалась самая свежая", got[0].Label)
+	}
+}
+
+// A goal can sit in status "active" while nothing runs: an interrupted or dead
+// turn leaves the state behind and Codex does not start it again. Skipping
+// every active goal meant crescent looked straight at the situation it exists
+// to fix and decided there was nothing to do — a live journal went silent for
+// hours under "все цели идут сами".
+func TestStuckActiveGoalIsNotConsideredMoving(t *testing.T) {
+	s := &Supervisor{
+		active:    map[string]time.Time{},
+		spend:     map[string]spendMark{},
+		startedAt: time.Now().Add(-2 * ProgressMaxAge), // grace period long over
+	}
+
+	if s.isMoving("никогда-ничего-не-делала") {
+		t.Error("цель без единого признака жизни считается работающей")
+	}
+
+	s.active["с-событиями"] = time.Now()
+	if !s.isMoving("с-событиями") {
+		t.Error("цель со свежим событием не считается работающей")
+	}
+
+	s.spend["с-токенами"] = spendMark{Tokens: 100, Moved: time.Now()}
+	if !s.isMoving("с-токенами") {
+		t.Error("цель со свежим расходом не считается работающей")
+	}
+
+	// Signs that have gone stale prove nothing.
+	s.active["давно-молчит"] = time.Now().Add(-2 * ProgressMaxAge)
+	s.spend["давно-молчит"] = spendMark{Tokens: 100, Moved: time.Now().Add(-2 * ProgressMaxAge)}
+	if s.isMoving("давно-молчит") {
+		t.Error("устаревшие признаки жизни всё ещё считаются работой")
+	}
+}
+
+// Right after startup nothing has been observed yet, and a goal genuinely
+// running elsewhere must not be restarted the instant the window opens.
+func TestFreshStartGivesGoalsGracePeriod(t *testing.T) {
+	s := &Supervisor{
+		active:    map[string]time.Time{},
+		spend:     map[string]spendMark{},
+		startedAt: time.Now(),
+	}
+	if !s.isMoving("ещё-не-наблюдали") {
+		t.Error("сразу после запуска цель уже объявлена застрявшей")
 	}
 }
