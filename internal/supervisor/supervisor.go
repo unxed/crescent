@@ -236,6 +236,7 @@ func (s *Supervisor) Status() Status {
 
 func (s *Supervisor) set(state State, msg string, until time.Time) {
 	s.mu.Lock()
+	prevState, prevMsg := s.status.State, s.status.Message
 	if s.status.State != state || s.status.Message != msg {
 		s.status.Since = time.Now()
 	}
@@ -243,7 +244,16 @@ func (s *Supervisor) set(state State, msg string, until time.Time) {
 	s.status.Pinned = s.pins.Count()
 	snap := s.status
 	cb := s.onChange
+	changed := prevState != state || prevMsg != msg
 	s.mu.Unlock()
+
+	// Every state change goes into the journal. Without this the log carried
+	// only pins and per-goal events, so a loop sitting in "waiting for the
+	// limit" or "cannot read the limit" left no trace and looked from outside
+	// like a program doing nothing at all.
+	if changed && s.jour != nil {
+		s.jour.Note("", "состояние: "+snap.Line())
+	}
 	if cb != nil {
 		cb(snap)
 	}

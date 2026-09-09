@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sync"
 	"time"
@@ -75,6 +76,8 @@ type Options struct {
 	OnActivity func(Activity)
 	// Stderr receives the server's diagnostics; nil discards them.
 	Stderr io.Writer
+	// LogLevel is the RUST_LOG filter handed to the server. Empty means info.
+	LogLevel string
 }
 
 // Dial starts `codex app-server` and completes the handshake.
@@ -82,7 +85,23 @@ func Dial(ctx context.Context, o Options) (*Client, error) {
 	if o.CodexPath == "" {
 		return nil, errors.New("appserver: не указан путь к codex")
 	}
+	if o.LogLevel == "" {
+		o.LogLevel = "info"
+	}
 	cmd := exec.CommandContext(ctx, o.CodexPath, "app-server")
+	// app-server logs through `tracing` to stderr, filtered by
+	// EnvFilter::from_default_env() — that is, RUST_LOG. With the variable
+	// unset the filter passes nothing, which is why stderr was completely
+	// silent on a live run while the server was dying. Asking for info level
+	// costs nothing and turns the silence into an explanation.
+	//
+	// (Source: codex-rs/app-server/src/lib.rs, where the stderr layer is built
+	// with EnvFilter::from_default_env() and LOG_FORMAT=json is offered.)
+	env := os.Environ()
+	if os.Getenv("RUST_LOG") == "" {
+		env = append(env, "RUST_LOG="+o.LogLevel)
+	}
+	cmd.Env = env
 
 	in, err := cmd.StdinPipe()
 	if err != nil {
@@ -178,6 +197,13 @@ func (c *Client) drainStderr(r io.Reader, w io.Writer) {
 	}
 }
 
+// stderrSink returns the diagnostic callback, if any.
+func (c *Client) stderrSink() func(string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.stderrFn
+}
+
 // SetStderrSink installs a callback for the server's diagnostic output.
 func (c *Client) SetStderrSink(fn func(string)) {
 	c.mu.Lock()
@@ -212,7 +238,19 @@ func (c *Client) readLoop() {
 			ch <- msg
 		}
 	}
-	c.fail(errors.New("app-server завершился (см. строки app-server: выше)"))
+	// The stream ended. Wait for the process so its exit status can be
+	// reported: on a live run stderr was completely silent, which leaves the
+	// exit code as the only remaining evidence of why it stopped.
+	why := "app-server завершился"
+	if err := c.cmd.Wait(); err != nil {
+		why += ": " + err.Error()
+	} else if st := c.cmd.ProcessState; st != nil {
+		why += fmt.Sprintf(": код выхода %d", st.ExitCode())
+	}
+	if fn := c.stderrSink(); fn != nil {
+		fn(why)
+	}
+	c.fail(errors.New(why))
 }
 
 func (c *Client) fail(err error) {
@@ -282,13 +320,17 @@ func (c *Client) Close() error {
 	if !already {
 		_ = c.in.Close()
 	}
+	// Wait may already have been called by readLoop when the stream ended;
+	// calling it twice is an error, so a kill is enough here.
 	done := make(chan error, 1)
 	go func() { done <- c.cmd.Wait() }()
 	select {
-	case err := <-done:
-		return err
+	case <-done:
+		return nil
 	case <-time.After(5 * time.Second):
-		_ = c.cmd.Process.Kill()
-		return <-done
+		if c.cmd.Process != nil {
+			_ = c.cmd.Process.Kill()
+		}
+		return nil
 	}
 }

@@ -359,13 +359,17 @@ func connect(codexPath string, verbose bool) (*appserver.Client, string, error) 
 	if path == "" {
 		return nil, "", fmt.Errorf("codex не найден; искал в %d местах, укажите путь через -codex", len(tried))
 	}
-	var stderr *os.File
+	// The server's own log goes to the terminal by default, not only under
+	// -verbose. Discarding it was why a dying app-server left no explanation
+	// anywhere; -verbose now only raises the level.
+	level := "info"
 	if verbose {
-		stderr = os.Stderr
+		level = "debug"
 	}
 	client, err := appserver.Dial(context.Background(), appserver.Options{
 		CodexPath: path,
-		Stderr:    stderr,
+		Stderr:    os.Stderr,
+		LogLevel:  level,
 	})
 	if err != nil {
 		return nil, path, fmt.Errorf("не удалось поговорить с app-server: %w", err)
