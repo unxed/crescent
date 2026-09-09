@@ -1,0 +1,68 @@
+name: Nightly binaries
+
+# Ready-to-run binaries without a local Go toolchain: every push to main and
+# once a night, so there is always something recent to download and try.
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      # Everything cross-compiles: the GUI backends dlopen GTK at run time and
+      # bind Win32 through pureffi, so there is no cgo and no toolchain per
+      # target.
+      - name: Build
+        run: |
+          mkdir -p dist
+          stamp="$(date -u +%Y%m%d).$(git rev-parse --short HEAD)"
+          echo "STAMP=$stamp" >> "$GITHUB_ENV"
+
+          build() {
+            os=$1; arch=$2; ext=$3; ldflags=$4
+            echo "-> $os/$arch"
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build \
+              -trimpath -ldflags="-s -w $ldflags" \
+              -o "dist/crescent-$os-$arch$ext" ./cmd/crescent
+          }
+
+          # -H windowsgui keeps a console window from appearing behind the app.
+          build windows amd64 .exe "-H windowsgui"
+          build windows arm64 .exe "-H windowsgui"
+          build linux   amd64 ""   ""
+          build linux   arm64 ""   ""
+          build darwin  arm64 ""   ""
+
+          (cd dist && sha256sum * > SHA256SUMS.txt)
+          ls -la dist
+
+      - name: Publish rolling nightly release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          name: "Nightly ${{ env.STAMP }}"
+          body: |
+            Автоматическая сборка из main, коммит ${{ github.sha }}.
+
+            Linux и macOS: `chmod +x` и запускать. Windows: запускать .exe.
+            Окно открывается само; выход — из меню в трее.
+
+            Это ночная сборка, не релиз: она перезаписывается при каждом
+            изменении main.
+          files: |
+            dist/crescent-*
+            dist/SHA256SUMS.txt
+          prerelease: true
+          make_latest: false

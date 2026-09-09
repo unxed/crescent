@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,6 +35,7 @@ type desktop struct {
 	lamp     *gw.Label
 	detail   *gw.Label
 	counts   *gw.Label
+	limits   *gw.Label
 	pauseBtn *gw.Button
 	viewBtn  *gw.Button
 	log      *gw.TextView
@@ -128,6 +130,7 @@ func (d *desktop) build() error {
 	d.lamp, _ = win.AddLabel("")
 	d.detail, _ = win.AddLabel("")
 	d.counts, _ = win.AddLabel("")
+	d.limits, _ = win.AddLabel("")
 	_, _ = win.AddLabel("────────────────────────────────────────────")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -215,6 +218,10 @@ func (d *desktop) build() error {
 	})
 
 	win.Closing.On(d.app.Scope(), func(req *gw.CloseRequest) {
+		// Logged on arrival: on one machine the close button quits instead of
+		// hiding, and this line distinguishes "the request never reached us"
+		// from "it reached us and we decided wrongly".
+		d.jour.Note("", fmt.Sprintf("запрос закрытия окна получен (трей: %v)", d.hasTray))
 		if d.hasTray {
 			req.CancelClose()
 			d.hideToTray()
@@ -243,8 +250,13 @@ func (d *desktop) buildTray() {
 	quit := gw.NewMenuItem("Выйти")
 	tray, err := d.app.NewTrayIcon("crescent", show, openLog, gw.Separator(), quit)
 	if err != nil {
+		// Recorded, because whether a tray exists decides what the close button
+		// does: with one, closing hides; without one it must quit, or the
+		// window would be lost with no way back.
+		d.jour.Note("", "трей недоступен ("+err.Error()+") — закрытие окна будет означать выход")
 		return
 	}
+	d.jour.Note("", "иконка в трее создана — закрытие окна будет сворачивать")
 	d.tray, d.hasTray = tray, true
 	show.Clicked.On(d.app.Scope(), func(struct{}) { d.win.Show() })
 	openLog.Clicked.On(d.app.Scope(), func(struct{}) { openPath(d.jour.Path()) })
@@ -260,8 +272,13 @@ func (d *desktop) render(s supervisor.Status) {
 	lamp := s.Lamp()
 	d.lamp.Text.Set(lamp.Symbol() + "   " + lamp.Word() + " — " + s.Why())
 	d.detail.Text.Set(s.Line())
-	d.counts.Text.Set(fmt.Sprintf("Отмечено целей: %d   •   перезапусков: %d",
-		d.pins.Count(), s.Restarts))
+	d.counts.Text.Set(fmt.Sprintf("Отмечено целей: %d   •   перезапусков: %d   •   потрачено токенов: %d",
+		d.pins.Count(), s.Restarts, s.SpentSince))
+	if len(s.Limits) > 0 {
+		d.limits.Text.Set("Лимиты:  " + strings.Join(s.Limits, "   |   "))
+	} else {
+		d.limits.Text.Set("Лимиты: ещё не прочитаны")
+	}
 	if d.pauseBtn != nil {
 		if d.sup.Paused() {
 			d.pauseBtn.Text.Set("Продолжить")

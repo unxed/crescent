@@ -103,6 +103,13 @@ type Status struct {
 	Restarts int
 	Since    time.Time
 
+	// Limits is every usage window the account has, ready to show. Asked for
+	// from the start and never displayed until now.
+	Limits []string
+	// Spent is how many tokens the pinned goals have used, and how much of that
+	// arrived since crescent started watching.
+	Spent, SpentSince int64
+
 	// Evidence is what has actually been proved about the work, and when. The
 	// lamp is derived from it rather than stored, so it fails safe.
 	Evidence Evidence
@@ -170,6 +177,9 @@ type Supervisor struct {
 	// is the only evidence that a model is working rather than merely marked
 	// active.
 	spend map[string]spendMark
+	// baseline is the token total when watching began, so the window can show
+	// what was spent under crescent rather than the lifetime total.
+	baseline int64
 	// fails counts consecutive failed restarts, so the lamp can stop claiming
 	// success while nothing is getting through.
 	fails    int
@@ -393,6 +403,11 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		}
 
 		limits, err := s.client.RateLimitsWithRetry(ctx, 3)
+		if err == nil {
+			s.mu.Lock()
+			s.status.Limits = limits.Summary()
+			s.mu.Unlock()
+		}
 		s.prove(func(e *Evidence) {
 			e.LimitChecked = fact(true)
 			e.Online = fact(err == nil)
@@ -478,6 +493,11 @@ func (s *Supervisor) observeSpend(id, label string, goal appserver.Goal) (moving
 // the work does not also stop the watching.
 func (s *Supervisor) survey(ctx context.Context) {
 	limits, err := s.client.RateLimitsWithRetry(ctx, 1)
+	if err == nil {
+		s.mu.Lock()
+		s.status.Limits = limits.Summary()
+		s.mu.Unlock()
+	}
 	s.prove(func(e *Evidence) {
 		e.LimitChecked = fact(true)
 		e.Online = fact(err == nil)
@@ -510,9 +530,19 @@ func (s *Supervisor) survey(ctx context.Context) {
 			s.note2(id, note)
 		}
 	}
+	var total, since int64
 	s.mu.Lock()
 	s.status.Running = running
+	for _, m := range s.spend {
+		total += m.Tokens
+	}
+	if s.baseline == 0 && total > 0 {
+		s.baseline = total // first reading is the starting point, not spending
+	}
+	since = total - s.baseline
+	s.status.Spent, s.status.SpentSince = total, since
 	s.mu.Unlock()
+
 	s.prove(func(e *Evidence) {
 		e.GoalsMoving = fact(moving > 0)
 		e.Progress = progress

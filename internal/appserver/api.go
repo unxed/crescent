@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -43,10 +44,20 @@ func (w RateLimitWindow) Label() string {
 	}
 }
 
-// RateLimits is the answer to "can we work right now?".
+// RateLimits is one metered bucket. An account has several — the ordinary
+// allowance and a separate one for heavier models — and each carries a rolling
+// window and a longer one.
 type RateLimits struct {
 	Primary   *RateLimitWindow `json:"primary"`
 	Secondary *RateLimitWindow `json:"secondary"`
+
+	LimitID         string `json:"limitId"`
+	LimitName       string `json:"limitName"`
+	NormalModelSlug string `json:"normalModelSlug"`
+
+	// Buckets holds the per-limit view, keyed by limitId in the response: the
+	// ordinary allowance and any model-specific ones alongside it.
+	Buckets []RateLimits `json:"-"`
 
 	// OrdinaryUsageAllowed is the backend's own verdict. The schema is explicit
 	// that clients must not infer recovery from percentages or reset times, so
@@ -103,15 +114,62 @@ func (c *Client) RateLimits(ctx context.Context) (RateLimits, json.RawMessage, e
 		return RateLimits{}, raw, err
 	}
 	var resp struct {
-		RateLimits           RateLimits `json:"rateLimits"`
-		OrdinaryUsageAllowed *bool      `json:"ordinaryUsageAllowed"`
+		RateLimits           RateLimits            `json:"rateLimits"`
+		ByLimitID            map[string]RateLimits `json:"rateLimitsByLimitId"`
+		OrdinaryUsageAllowed *bool                 `json:"ordinaryUsageAllowed"`
 	}
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return RateLimits{}, raw, err
 	}
 	limits := resp.RateLimits
 	limits.OrdinaryUsageAllowed = resp.OrdinaryUsageAllowed
+
+	// Every metered bucket, in a stable order so the window does not reshuffle.
+	ids := make([]string, 0, len(resp.ByLimitID))
+	for id := range resp.ByLimitID {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		b := resp.ByLimitID[id]
+		if b.LimitID == "" {
+			b.LimitID = id
+		}
+		limits.Buckets = append(limits.Buckets, b)
+	}
 	return limits, raw, nil
+}
+
+// Title names a bucket for a human.
+func (r RateLimits) Title() string {
+	switch {
+	case r.LimitName != "":
+		return r.LimitName
+	case r.NormalModelSlug != "":
+		return r.NormalModelSlug
+	case r.LimitID != "":
+		return r.LimitID
+	}
+	return "аккаунт"
+}
+
+// Summary renders every window of every bucket as short readable lines.
+func (r RateLimits) Summary() []string {
+	var out []string
+	add := func(title string, b RateLimits) {
+		for _, w := range b.Windows() {
+			line := fmt.Sprintf("%s %s: %.0f%%", title, w.Label(), w.UsedPercent)
+			if at, ok := w.ResetAt(); ok {
+				line += fmt.Sprintf(", сброс в %s", at.Local().Format("15:04"))
+			}
+			out = append(out, line)
+		}
+	}
+	add("аккаунт", r)
+	for _, b := range r.Buckets {
+		add(b.Title(), b)
+	}
+	return out
 }
 
 // ThreadStatus is an object, not a string: {"type":"notLoaded"}. Declaring it
