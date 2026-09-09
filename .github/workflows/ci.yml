@@ -38,6 +38,14 @@ jobs:
       - name: Daemon rehearsal against a mock codex
         run: ./archive/ci/rehearsal.sh
 
+      # The window is where every regression the user actually noticed lived:
+      # the lamp, the log, Esc, the tray. None of it was watched by anything
+      # until now.
+      - name: Window smoke test under Xvfb
+        run: |
+          sudo apt-get install -y -qq xvfb openbox xdotool x11-utils
+          ./ci/gui-smoke.sh
+
       # The same rehearsal, but running the Windows build under Wine. The
       # Windows job below is the real check; this one runs alongside the Linux
       # tests and catches platform mistakes — a path joined with the wrong

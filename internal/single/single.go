@@ -12,6 +12,15 @@ import (
 // Lock is a held single-instance lock.
 type Lock struct{ path string }
 
+// Path is the pid file the lock lives in.
+func Path() (string, error) {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "crescent", "crescent.pid"), nil
+}
+
 // Acquire takes the lock, or reports which process already holds it.
 //
 // Two crescents driving the same account is not a harmless duplicate: they take
@@ -20,15 +29,13 @@ type Lock struct{ path string }
 // showed exactly that — two "наблюдение запущено" a second apart, then a stream
 // of writer conflicts.
 func Acquire() (*Lock, int, error) {
-	dir, err := os.UserCacheDir()
+	path, err := Path()
 	if err != nil {
 		return nil, 0, err
 	}
-	dir = filepath.Join(dir, "crescent")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, 0, err
 	}
-	path := filepath.Join(dir, "crescent.pid")
 
 	if data, err := os.ReadFile(path); err == nil {
 		if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && pid != os.Getpid() {

@@ -159,3 +159,35 @@ func TestQuietGoalSaysNothingHappened(t *testing.T) {
 		t.Error("пометка осталась после появления событий")
 	}
 }
+
+// Without a date, a line from yesterday looks like a line from a minute ago —
+// which is precisely how a day-old failure was read as a live one.
+func TestEveryLineCarriesADate(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	j, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.Label("t1", "Konsole")
+	j.Record(appserver.Activity{ThreadID: "t1", Kind: "ход", Text: "начат"})
+	j.Note("", "наблюдение запущено")
+	j.Close()
+
+	dir, _ := Dir()
+	for _, name := range []string{"all.log", "Konsole.log"} {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
+			if line == "" {
+				continue
+			}
+			// "MM-DD HH:MM:SS" — the date is the first token.
+			if len(line) < 14 || line[2] != '-' || line[5] != ' ' {
+				t.Errorf("%s: строка без даты: %q", name, line)
+				break
+			}
+		}
+	}
+}
