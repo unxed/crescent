@@ -197,6 +197,10 @@ type Supervisor struct {
 	// noisy remembers goals whose history discrepancy has already been
 	// mentioned, so it is said once instead of hundreds of times.
 	noisy map[string]bool
+	// lastMsg is each goal's most recent message. A goal blocked in plain
+	// speech names in it the words it wants to hear back, and there is nowhere
+	// else to read them.
+	lastMsg map[string]string
 	// trace, when set, receives one line per decision. Every pass so far left
 	// no record of what it examined or why it did nothing, so a loop that
 	// skipped every goal was indistinguishable from a loop that never ran.
@@ -252,6 +256,7 @@ func New(o Options) *Supervisor {
 		startedAt: time.Now(),
 		broken:    map[string]string{},
 		noisy:     map[string]bool{},
+		lastMsg:   map[string]string{},
 		status:    Status{State: StateIdle, Since: time.Now()},
 	}
 }
@@ -320,6 +325,52 @@ func (s *Supervisor) Broken(id string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.broken[id]
+}
+
+// NoteMessage remembers what a goal last said.
+func (s *Supervisor) NoteMessage(threadID, text string) {
+	if threadID == "" || strings.TrimSpace(text) == "" {
+		return
+	}
+	s.mu.Lock()
+	s.lastMsg[threadID] = text
+	s.mu.Unlock()
+}
+
+// AwaitingWord reports a goal stopped in plain speech, together with the words
+// it asked for. The phrase is empty when the goal is waiting but did not quote
+// one — then only a person can decide what to say.
+func (s *Supervisor) AwaitingWord(id string) (waiting bool, phrase string) {
+	s.mu.Lock()
+	msg := s.lastMsg[id]
+	defer s.mu.Unlock()
+	if msg == "" || !appserver.AsksForConfirmation(msg) {
+		return false, ""
+	}
+	// A goal just answered is not waiting: without this the same phrase would
+	// be sent again on every pass until the goal's next message arrived.
+	if last := s.started[id]; !last.IsZero() && time.Since(last) < 2*time.Minute {
+		return false, ""
+	}
+	return true, appserver.UnblockPhrase(msg)
+}
+
+// SendWord replies to a goal in its own thread, which is how a block stated in
+// plain speech is lifted.
+func (s *Supervisor) SendWord(ctx context.Context, id, text string) error {
+	if err := s.client.Resume(ctx, id); err != nil {
+		return err
+	}
+	if err := s.client.StartTurn(ctx, id, text); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.started[id] = time.Now()
+	delete(s.lastMsg, id) // asked and answered
+	s.mu.Unlock()
+	s.bumpRestart()
+	s.note2(id, "отправлено подтверждение: "+text)
+	return nil
 }
 
 // NoteActivity records that a thread produced something in the event stream.

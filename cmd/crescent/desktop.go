@@ -98,6 +98,15 @@ func runDesktop(codexPath, prompt string, verbose, wire, trace, serverLog bool, 
 		Client: client, Pins: thePins, Journal: jour, Prompt: prompt, Poll: poll,
 		OnChange: func(s supervisor.Status) {
 			app.QueueUpdate(func() { d.render(s) })
+			// Automatic approval covers both kinds of block: the protocol
+			// request answered on arrival, and the one stated in plain speech,
+			// which is only visible once a pass has read the goal's state.
+			d.mu.Lock()
+			auto := d.autoOK
+			d.mu.Unlock()
+			if auto {
+				go d.answerSpokenBlocks()
+			}
 		},
 	})
 
@@ -120,6 +129,9 @@ func runDesktop(codexPath, prompt string, verbose, wire, trace, serverLog bool, 
 		jour.Record(a)
 		d.sup.NoteTurn(a.ThreadID, a.TurnID)
 		d.sup.NoteActivity(a.ThreadID)
+		if a.Kind == "сообщение" {
+			d.sup.NoteMessage(a.ThreadID, a.Text)
+		}
 	})
 
 	fmt.Println("codex:", path)
@@ -272,7 +284,7 @@ func (d *desktop) build() error {
 		d.mu.Unlock()
 		if on {
 			d.jour.Note("", "подтверждаю запросы Codex автоматически")
-			d.approveAll() // anything already waiting is answered now
+			go d.approveAll() // anything already waiting is answered now
 		} else {
 			d.jour.Note("", "запросы Codex буду показывать вам")
 		}
@@ -402,7 +414,34 @@ func (d *desktop) approveAll() {
 		}
 		d.jour.Note("", "разрешено вами: "+p.summary)
 	}
+	d.answerSpokenBlocks()
 	d.render(d.sup.Status())
+}
+
+// answerSpokenBlocks sends each waiting goal the words it asked for.
+//
+// The phrase is never invented: when the goal did not quote one, crescent says
+// so and leaves it to a person, because agreeing to something we did not read
+// is not consent.
+func (d *desktop) answerSpokenBlocks() {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	for _, id := range d.pins.IDs() {
+		waiting, phrase := d.sup.AwaitingWord(id)
+		if !waiting {
+			continue
+		}
+		label := d.pins.Label(id)
+		if phrase == "" {
+			d.jour.Note("", label+": ждёт ответа, но не назвала, что написать — "+
+				"посмотрите её журнал и ответьте в Codex")
+			continue
+		}
+		if err := d.sup.SendWord(ctx, id, phrase); err != nil {
+			d.jour.Note("", label+": не удалось отправить подтверждение: "+err.Error())
+		}
+	}
 }
 
 func (d *desktop) buildTray() {
@@ -467,6 +506,14 @@ func (d *desktop) render(s supervisor.Status) {
 		d.mu.Lock()
 		n := len(d.pending)
 		d.mu.Unlock()
+		// A goal blocked in plain speech is waiting just as surely as a
+		// protocol request, and the button was blind to it: the one goal that
+		// needed a word said "подтверждать нечего".
+		for _, id := range d.pins.IDs() {
+			if waiting, _ := d.sup.AwaitingWord(id); waiting {
+				n++
+			}
+		}
 		switch {
 		case n == 0:
 			d.approveBtn.Text.Set("Подтверждать нечего")
