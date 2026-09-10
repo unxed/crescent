@@ -355,9 +355,23 @@ func (s *Supervisor) FetchLastMessage(ctx context.Context, id string) {
 		return
 	}
 	msg, err := s.client.LastAgentMessage(ctx, id)
-	if err != nil || strings.TrimSpace(msg) == "" {
+	if err != nil {
+		// Said once per goal: swallowing this is what hid a whole round of
+		// investigation, because a request that failed looked exactly like a
+		// goal that had nothing to say.
+		s.mu.Lock()
+		known := s.noisy["fetch:"+id]
+		s.noisy["fetch:"+id] = true
+		s.mu.Unlock()
+		if !known {
+			s.note2(id, "не удалось прочитать последнее сообщение цели: "+err.Error())
+		}
 		return
 	}
+	if strings.TrimSpace(msg) == "" {
+		return
+	}
+	s.note2(id, "последнее сообщение цели прочитано, ищу в нём, что от вас требуется")
 	s.NoteMessage(id, msg)
 }
 

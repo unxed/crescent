@@ -3,6 +3,7 @@ package appserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -74,19 +75,49 @@ func (c *Client) LastAgentMessage(ctx context.Context, threadID string) (string,
 	if err != nil {
 		return "", err
 	}
+	// Two shapes are accepted because the wire is what decides, not my reading
+	// of it: items may arrive bare or wrapped, and guessing one and silently
+	// returning nothing is how this went unnoticed for a round.
 	var resp struct {
 		Data []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
+			Type    string    `json:"type"`
+			Text    string    `json:"text"`
+			Item    *listItem `json:"item"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &resp); err != nil {
-		return "", err
+		return "", fmt.Errorf("разбор ответа thread/items/list: %w", err)
 	}
+	if len(resp.Data) == 0 {
+		return "", fmt.Errorf("thread/items/list вернул пусто")
+	}
+
+	kinds := map[string]int{}
 	for _, it := range resp.Data {
-		if it.Type == "agentMessage" && strings.TrimSpace(it.Text) != "" {
-			return it.Text, nil
+		typ, text := it.Type, it.Text
+		if it.Item != nil {
+			typ, text = it.Item.Type, it.Item.Text
+		}
+		if text == "" {
+			for _, c := range it.Content {
+				text += c.Text
+			}
+		}
+		kinds[typ]++
+		if typ == "agentMessage" && strings.TrimSpace(text) != "" {
+			return text, nil
 		}
 	}
-	return "", nil
+	return "", fmt.Errorf("среди %d элементов нет сообщения модели (виды: %v)",
+		len(resp.Data), kinds)
+}
+
+// listItem is the wrapped form of an item in a listing.
+type listItem struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
 }
