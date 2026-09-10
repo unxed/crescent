@@ -194,6 +194,10 @@ func (d *desktop) build() error {
 		if err != nil {
 			return err
 		}
+		// Registered so the row can carry live counters and the reason it is
+		// waiting. The list was declared and iterated but never filled, so every
+		// per-goal number silently never appeared.
+		d.rows = append(d.rows, goalRow{id: g.ThreadID, label: g.Label, box: box})
 		box.Toggled.On(d.app.Scope(), func(on bool) {
 			d.pins.Set(g.ThreadID, g.Label, on)
 			verb := "снята с наблюдения"
@@ -344,8 +348,21 @@ func (d *desktop) render(s supervisor.Status) {
 	lamp := s.Lamp()
 	d.lamp.Text.Set(lamp.Symbol() + "   " + lamp.Word() + " — " + s.Why())
 	d.detail.Text.Set(s.Line())
-	d.counts.Text.Set(fmt.Sprintf("Отмечено целей: %d   •   перезапусков: %d   •   потрачено токенов: %d",
-		d.pins.Count(), s.Restarts, s.SpentSince))
+	counts := fmt.Sprintf("Отмечено целей: %d   •   перезапусков: %d   •   потрачено токенов: %d",
+		d.pins.Count(), s.Restarts, s.SpentSince)
+	if !s.NextPass.IsZero() {
+		if left := time.Until(s.NextPass); left > 0 {
+			counts += fmt.Sprintf("   •   следующая проверка через %s", left.Round(time.Second))
+		} else {
+			counts += "   •   проверяю…"
+		}
+	}
+	if !s.Until.IsZero() {
+		if left := time.Until(s.Until); left > 0 {
+			counts += fmt.Sprintf("   •   сброс лимита через %s", left.Round(time.Minute))
+		}
+	}
+	d.counts.Text.Set(counts)
 	// Split across two lines: one long line of limits stretched the window
 	// wider than everything else in it.
 	switch {
@@ -375,9 +392,16 @@ func (d *desktop) render(s supervisor.Status) {
 		text := r.label
 		if sp, ok := s.PerGoal[r.id]; ok {
 			text += fmt.Sprintf("  [%s]  %d токенов", sp.Status, sp.Tokens)
-			if !sp.LastSeen.IsZero() {
-				text += fmt.Sprintf(", событие %s назад",
-					time.Since(sp.LastSeen).Round(time.Second))
+			// Whatever this goal is waiting for, said in words, with the time
+			// left when there is one. Silence during a wait was the single
+			// thing that made the program look broken while it worked.
+			if sp.Waiting != "" {
+				text += "  — " + sp.Waiting
+				if !sp.Until.IsZero() {
+					if left := time.Until(sp.Until); left > 0 {
+						text += fmt.Sprintf(", ещё %s", left.Round(time.Second))
+					}
+				}
 			}
 		}
 		r.box.Text.Set(text)

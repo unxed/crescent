@@ -112,6 +112,11 @@ type Status struct {
 	// PerGoal is what each pinned goal has spent and when it last stirred, so
 	// the window can show it next to the goal instead of one opaque total.
 	PerGoal map[string]GoalSpend
+	// NextPass is when the loop will look again. Every wait in this program
+	// used to be invisible: the window said nothing while five minutes of grace
+	// period elapsed, and a person watching had no way to tell waiting from
+	// broken.
+	NextPass time.Time
 
 	// Evidence is what has actually been proved about the work, and when. The
 	// lamp is derived from it rather than stored, so it fails safe.
@@ -637,6 +642,41 @@ func (s *Supervisor) survey(ctx context.Context) {
 	s.proveMovement(ctx)
 }
 
+// waitReason explains, in the goal's own terms, what it is waiting for and
+// until when. This is what the window shows: a countdown beats silence, and a
+// named wait beats a countdown.
+func (s *Supervisor) waitReason(id string, goal appserver.Goal) (string, time.Time) {
+	s.mu.Lock()
+	startedAt, started := s.startedAt, s.started[id]
+	last := s.active[id]
+	mark, hasSpend := s.spend[id]
+	broken := s.broken[id]
+	s.mu.Unlock()
+
+	switch {
+	case broken != "":
+		return broken, time.Time{}
+	case !appserver.Restartable(goal.Status):
+		return "ждёт вас: статус " + goal.Status, time.Time{}
+	case !started.IsZero() && time.Since(started) < 2*time.Minute:
+		return "запущена, жду появления хода", started.Add(2 * time.Minute)
+	}
+
+	// The grace period: right after startup nothing has been observed yet, so a
+	// goal is given the benefit of the doubt. It was the single most confusing
+	// wait in the program, because nothing said it was happening.
+	if last.IsZero() && !hasSpend && time.Since(startedAt) < ProgressMaxAge {
+		return "льготный период после запуска", startedAt.Add(ProgressMaxAge)
+	}
+	if !last.IsZero() && time.Since(last) < ProgressMaxAge {
+		return "работает: событие " + time.Since(last).Round(time.Second).String() + " назад", time.Time{}
+	}
+	if hasSpend && !mark.Moved.IsZero() && time.Since(mark.Moved) < ProgressMaxAge {
+		return "работает: расход растёт", time.Time{}
+	}
+	return "", time.Time{}
+}
+
 // isMoving reports whether a goal has shown any sign of life recently.
 //
 // A goal can sit in status "active" while nothing runs: a turn that died or was
@@ -685,8 +725,10 @@ func (s *Supervisor) proveMovement(ctx context.Context) {
 		s.mu.Lock()
 		lastSeen := s.active[id]
 		s.mu.Unlock()
-		perGoal[id] = GoalSpend{Tokens: goal.TokensUsed, Seconds: goal.TimeUsedSeconds,
+		sp := GoalSpend{Tokens: goal.TokensUsed, Seconds: goal.TimeUsedSeconds,
 			Status: goal.Status, LastSeen: lastSeen}
+		sp.Waiting, sp.Until = s.waitReason(id, goal)
+		perGoal[id] = sp
 		streaming := !lastSeen.IsZero() && time.Since(lastSeen) < ProgressMaxAge
 
 		switch {
@@ -835,6 +877,15 @@ func (s *Supervisor) awaitClosedApp(ctx context.Context) bool {
 // suspends for two hours must wake up and re-check the wall clock, not keep
 // counting down a single long timer.
 func (s *Supervisor) sleep(ctx context.Context) bool {
+	s.mu.Lock()
+	s.status.NextPass = time.Now().Add(s.poll)
+	snap := s.status
+	cb := s.onChange
+	s.mu.Unlock()
+	if cb != nil {
+		cb(snap)
+	}
+
 	deadline := time.Now().Add(s.poll)
 	for time.Now().Before(deadline) {
 		select {
@@ -859,6 +910,10 @@ type GoalSpend struct {
 	Seconds  int64
 	Status   string
 	LastSeen time.Time
+	// Waiting says what this goal is waiting for, and Until when the wait ends.
+	// Empty means it is not waiting on anything.
+	Waiting string
+	Until   time.Time
 }
 
 type GoalView struct {
