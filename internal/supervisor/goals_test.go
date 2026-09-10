@@ -269,3 +269,25 @@ func TestSpendAccumulatesAcrossRestarts(t *testing.T) {
 		t.Errorf("сброс счётчика цели уменьшил общий расход: %d", s.spentHere)
 	}
 }
+
+// Signs of life alone must stop a restart. Requiring status "active" as well
+// meant a goal whose record had gone stale — running commands this very second
+// — was restarted anyway: a live run reached 141 restarts of working goals,
+// each interrupting them and spending tokens for nothing.
+func TestWorkingGoalIsNotRestartedWhateverTheRecordSays(t *testing.T) {
+	s := &Supervisor{
+		active:    map[string]time.Time{"g": time.Now()},
+		spend:     map[string]spendMark{},
+		samples:   map[string]int{"g": 5},
+		startedAt: time.Now().Add(-time.Hour),
+	}
+	if !s.isMoving("g") {
+		t.Fatal("цель со свежим событием не считается работающей")
+	}
+
+	// The same goal with no signs of life at all is fair game.
+	s.active["g"] = time.Now().Add(-2 * ProgressMaxAge)
+	if s.isMoving("g") {
+		t.Error("цель без признаков жизни всё ещё считается работающей")
+	}
+}

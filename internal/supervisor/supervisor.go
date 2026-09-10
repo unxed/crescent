@@ -992,16 +992,20 @@ func (s *Supervisor) proveMovement(ctx context.Context) {
 			continue
 		}
 		label := s.pins.Label(id)
-		if strings.EqualFold(goal.Status, appserver.StatusActive) {
-			running++
-		}
-
 		grew, note := s.observeSpend(id, label, goal)
 
 		s.mu.Lock()
 		lastSeen := s.active[id]
 		s.mu.Unlock()
 		streaming := !lastSeen.IsZero() && time.Since(lastSeen) < ProgressMaxAge
+
+		// Counted by the same evidence the lamp uses. Counting goal.Status here
+		// while the lamp went by events meant the headline said «работают 3 из
+		// 3» and the line under it «жду, когда цели можно будет запустить» —
+		// both computed honestly, from different sources.
+		if strings.EqualFold(goal.Status, appserver.StatusActive) || grew || streaming {
+			running++
+		}
 
 		s.mu.Lock()
 		s.statuses[id] = goal.Status
@@ -1101,8 +1105,13 @@ func (s *Supervisor) restartPinned(ctx context.Context) {
 		case !appserver.Restartable(goal.Status):
 			s.tracef("  %s: ПРОПУСК — статус %q не перезапускается", label, goal.Status)
 			continue
-		case strings.EqualFold(goal.Status, appserver.StatusActive) && moving:
-			s.tracef("  %s: ПРОПУСК — работает по-настоящему", label)
+		case moving:
+			// Signs of life alone are enough to leave a goal alone. Requiring
+			// status "active" as well meant a goal whose record had gone stale
+			// — running commands this very second — was restarted anyway: a
+			// live run reached 141 restarts of goals that were working, each
+			// one interrupting them and spending tokens for nothing.
+			s.tracef("  %s: ПРОПУСК — работает по-настоящему (статус %q)", label, goal.Status)
 			continue
 		case time.Since(s.started[id]) < 2*time.Minute:
 			s.tracef("  %s: ПРОПУСК — запущена %s назад, ждём появления хода",
