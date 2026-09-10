@@ -420,7 +420,10 @@ func (d *desktop) approveAll() {
 		d.jour.Note("", "разрешено вами: "+p.summary)
 	}
 	d.answerSpokenBlocks()
-	d.render(d.sup.Status())
+	// Touching a widget from anywhere but the UI thread is a segfault, not a
+	// race you get away with: approveAll runs in a goroutine, so the redraw has
+	// to be handed back through the queue.
+	d.app.QueueUpdate(func() { d.render(d.sup.Status()) })
 }
 
 // answerSpokenBlocks sends each waiting goal the words it asked for.

@@ -103,6 +103,13 @@ type Journal struct {
 
 // Dir is where journals live: a subdirectory of the user cache.
 func Dir() (string, error) {
+	// XDG_CACHE_HOME is honoured everywhere, not only where the standard
+	// library happens to read it. On Windows os.UserCacheDir reads
+	// LOCALAPPDATA, so tests that set XDG_CACHE_HOME all landed in one shared
+	// directory and one test's output leaked into another's.
+	if dir := os.Getenv("XDG_CACHE_HOME"); dir != "" {
+		return filepath.Join(dir, "crescent", "journal"), nil
+	}
 	base, err := os.UserCacheDir()
 	if err != nil {
 		return "", err
@@ -384,6 +391,12 @@ func (j *Journal) Close() {
 	}
 	if j.combined != nil {
 		_ = j.combined.Close()
+	}
+	// app-server.log was opened and never closed. Harmless on Unix, fatal on
+	// Windows: an open file cannot be deleted, so every test that used a
+	// temporary directory failed to clean it up.
+	if j.server != nil {
+		_ = j.server.Close()
 	}
 	if j.wire != nil {
 		_ = j.wire.Close()

@@ -266,14 +266,18 @@ func TestServerLineGoesToTheGoalItNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	j.ShowServerLines(true)
-	j.Label("01a08207-cf5e-7631-90c3-3f8ac9c49a75", "Лунобот-1")
+	// An ASCII name on purpose: under Wine a Cyrillic filename cannot be
+	// created at all — verified with a five-line program containing none of
+	// this code — and the test would fail for a reason unrelated to what it
+	// checks.
+	j.Label("01a08207-cf5e-7631-90c3-3f8ac9c49a75", "Lunobot-1")
 	j.Server("WARN codex_thread_store: failed to project durable rollout for " +
 		"01a08207-cf5e-7631-90c3-3f8ac9c49a75: expected ordinal 4330, got 4329")
 	j.Server("2026-09-09T08:54:34Z WARN codex_core: something with no thread at all")
 	j.Close()
 
 	dir, _ := Dir()
-	goal, err := os.ReadFile(filepath.Join(dir, "Лунобот-1.log"))
+	goal, err := os.ReadFile(filepath.Join(dir, "Lunobot-1.log"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +300,11 @@ func TestServerChatterStaysOutOfTheHumanJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	j.Label("01a08207-cf5e-7631-90c3-3f8ac9c49a75", "Лунобот-1")
+	// An ASCII name on purpose: under Wine a Cyrillic filename cannot be
+	// created at all — verified with a five-line program containing none of
+	// this code — and the test would fail for a reason unrelated to what it
+	// checks.
+	j.Label("01a08207-cf5e-7631-90c3-3f8ac9c49a75", "Lunobot-1")
 	j.Note("", "наблюдение запущено")
 	j.Server("2026-09-10T03:25:39Z WARN codex_thread_store::local::live_writer: " +
 		"failed to project durable rollout for 01a08207-cf5e-7631-90c3-3f8ac9c49a75")

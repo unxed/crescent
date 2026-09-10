@@ -872,11 +872,16 @@ func (s *Supervisor) waitReason(id string, goal appserver.Goal) (string, time.Ti
 	broken := s.broken[id]
 	s.mu.Unlock()
 
+	// The same live word the row shows: saying "ждёт вас: статус blocked" next
+	// to a green lamp and an active status was the row contradicting itself in
+	// a third place.
+	shown := s.shownStatus(id, goal.Status)
+
 	switch {
 	case broken != "":
 		return broken, time.Time{}
-	case !appserver.Restartable(goal.Status):
-		return "ждёт вас: статус " + goal.Status, time.Time{}
+	case !appserver.Restartable(shown):
+		return "ждёт вас: статус " + shown, time.Time{}
 	case !started.IsZero() && time.Since(started) < 2*time.Minute:
 		return "запущена, жду появления хода", started.Add(2 * time.Minute)
 	}
