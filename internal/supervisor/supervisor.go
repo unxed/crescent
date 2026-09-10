@@ -149,13 +149,17 @@ func (s Status) Line() string {
 		}
 		return "не удаётся запустить цели — смотрите журнал"
 	case StateWorking:
-		if s.Running > 0 && s.Running == s.Pinned {
-			return fmt.Sprintf("все %d целей идут сами — перезапускать нечего", s.Pinned)
+		// The headline already counts who is working. This line says what
+		// crescent itself is doing about it, instead of repeating the count in
+		// different words — two numbers side by side read as a contradiction
+		// even when both were right.
+		switch {
+		case s.Running == s.Pinned && s.Pinned > 0:
+			return "перезапускать нечего — слежу и жду"
+		case s.Running > 0:
+			return fmt.Sprintf("остановившиеся (%d) перезапущу на ближайшем проходе", s.Pinned-s.Running)
 		}
-		if s.Running > 0 {
-			return fmt.Sprintf("идут сами: %d из %d; остальные жду перезапустить", s.Running, s.Pinned)
-		}
-		return fmt.Sprintf("веду %d целей", s.Pinned)
+		return "жду, когда цели можно будет запустить"
 	}
 	if s.Message != "" {
 		return string(s.State) + ": " + s.Message
@@ -188,9 +192,12 @@ type Supervisor struct {
 	// active is when each thread last produced anything at all in the event
 	// stream, which proves work even when the token counter does not move.
 	active map[string]time.Time
-	// baseline is the token total when watching began, so the window can show
-	// what was spent under crescent rather than the lifetime total.
-	baseline int64
+	// spentHere accumulates every observed increase, so the figure means what it
+	// says: tokens spent while crescent was watching. Subtracting a baseline
+	// from a running total looked equivalent and was not — a goal that vanished
+	// from a pass, or a counter that reset on restart, made the difference come
+	// out zero while the account was plainly being spent.
+	spentHere int64
 	// broken holds goals Codex cannot write history for, with the reason. No
 	// number of restarts fixes that, so crescent stops trying and says so.
 	broken map[string]string
@@ -791,6 +798,7 @@ func (s *Supervisor) observeSpend(id, label string, goal appserver.Goal) (moving
 	grew := seen && goal.TokensUsed > prev.Tokens
 	switch {
 	case grew:
+		s.spentHere += goal.TokensUsed - prev.Tokens
 		s.spend[id] = spendMark{Tokens: goal.TokensUsed, Seconds: goal.TimeUsedSeconds, Moved: now}
 	case !seen:
 		// First sighting: record the counter, but leave Moved unset. Stamping
@@ -1002,10 +1010,7 @@ func (s *Supervisor) proveMovement(ctx context.Context) {
 	for _, m := range s.spend {
 		total += m.Tokens
 	}
-	if s.baseline == 0 && total > 0 {
-		s.baseline = total
-	}
-	s.status.Spent, s.status.SpentSince = total, total-s.baseline
+	s.status.Spent, s.status.SpentSince = total, s.spentHere
 	s.mu.Unlock()
 
 	s.prove(func(e *Evidence) {

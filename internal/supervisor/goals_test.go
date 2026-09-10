@@ -219,3 +219,38 @@ func TestLiveThreadStatusIsShownOverTheGoalRecord(t *testing.T) {
 		t.Errorf("устаревшее сообщение потока всё ещё в ходу: %q", got)
 	}
 }
+
+// Tokens spent while crescent watched, counted by accumulating each observed
+// increase. Subtracting a start baseline from a running total looked equivalent
+// and was not: a goal missing from one pass, or a counter reset by a restart,
+// made the difference come out zero while the account was plainly being spent.
+func TestSpendAccumulatesAcrossRestarts(t *testing.T) {
+	s := &Supervisor{
+		spend:   map[string]spendMark{},
+		samples: map[string]int{},
+		active:  map[string]time.Time{},
+	}
+	obs := func(id string, tokens int64) {
+		s.observeSpend(id, id, appserver.Goal{TokensUsed: tokens, Status: "active"})
+	}
+
+	obs("a", 1000) // first sighting: remembered, not counted
+	obs("a", 1500) // +500
+	obs("b", 200)  // another goal appears
+	obs("b", 700)  // +500
+	if s.spentHere != 1000 {
+		t.Errorf("накоплено %d, ожидалось 1000", s.spentHere)
+	}
+
+	// A goal that disappears for a pass must not subtract anything.
+	obs("a", 1500)
+	if s.spentHere != 1000 {
+		t.Errorf("без прироста счёт изменился: %d", s.spentHere)
+	}
+
+	// A counter that goes backwards after a restart is not negative spending.
+	obs("a", 100)
+	if s.spentHere != 1000 {
+		t.Errorf("сброс счётчика цели уменьшил общий расход: %d", s.spentHere)
+	}
+}
