@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 )
 
 // Activity is one thing the model did, distilled from a server notification to
@@ -48,10 +49,43 @@ type item struct {
 // Deltas are deliberately dropped: they arrive character by character and would
 // drown the log. The completed item carries the whole text, and that is what
 // gets written.
+// reasoningSummary assembles the model's own summary of its thinking. The
+// deltas arrive in fragments — 293 of them in one five-minute probe run — and
+// dropping them was why a working goal looked like silence. They are joined per
+// turn and reported once, so the journal reads as sentences, not as a stream.
+var reasoningSummary = struct {
+	sync.Mutex
+	byTurn map[string]string
+}{byTurn: map[string]string{}}
+
 func Interpret(method string, params json.RawMessage) (Activity, bool) {
 	var n baseNote
 	_ = json.Unmarshal(params, &n)
 	a := Activity{ThreadID: n.ThreadID, TurnID: n.TurnID}
+
+	switch method {
+	case "item/reasoning/summaryTextDelta":
+		var d struct {
+			Delta string `json:"delta"`
+		}
+		if json.Unmarshal(params, &d) == nil && d.Delta != "" {
+			reasoningSummary.Lock()
+			reasoningSummary.byTurn[n.TurnID] += d.Delta
+			reasoningSummary.Unlock()
+		}
+		return Activity{}, false
+	case "item/reasoning/summaryPartAdded":
+		// A part boundary: whatever accumulated is one thought, complete.
+		reasoningSummary.Lock()
+		text := reasoningSummary.byTurn[n.TurnID]
+		delete(reasoningSummary.byTurn, n.TurnID)
+		reasoningSummary.Unlock()
+		if strings.TrimSpace(text) != "" {
+			a.Kind, a.Text = "думает", text
+			return a, true
+		}
+		return Activity{}, false
+	}
 
 	switch method {
 	case "item/completed", "item/started":

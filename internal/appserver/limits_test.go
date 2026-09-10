@@ -181,3 +181,37 @@ func TestInstallationIDIsNotAThread(t *testing.T) {
 		t.Errorf("тред из строки о проекции не найден: %q", got)
 	}
 }
+
+// The model's thinking arrives as fragments — 293 in one five-minute probe run
+// — and dropping them was why a working goal looked like silence. They are
+// joined per turn and reported once, as a sentence.
+func TestReasoningFragmentsBecomeOneThought(t *testing.T) {
+	frag := func(turn, delta string) json.RawMessage {
+		return json.RawMessage(`{"threadId":"t1","turnId":"` + turn + `","delta":"` + delta + `"}`)
+	}
+
+	if _, ok := Interpret("item/reasoning/summaryTextDelta", frag("turn-1", "Проверяю ")); ok {
+		t.Error("отдельный фрагмент попал в журнал — их сотни на ход")
+	}
+	Interpret("item/reasoning/summaryTextDelta", frag("turn-1", "лог CI"))
+
+	a, ok := Interpret("item/reasoning/summaryPartAdded",
+		json.RawMessage(`{"threadId":"t1","turnId":"turn-1"}`))
+	if !ok {
+		t.Fatal("собранная мысль не дошла до журнала")
+	}
+	if a.Text != "Проверяю лог CI" {
+		t.Errorf("мысль собрана неверно: %q", a.Text)
+	}
+	if a.Kind != "думает" {
+		t.Errorf("вид записи %q", a.Kind)
+	}
+
+	// A second turn must not inherit the first one's words.
+	Interpret("item/reasoning/summaryTextDelta", frag("turn-2", "Другое"))
+	b, _ := Interpret("item/reasoning/summaryPartAdded",
+		json.RawMessage(`{"threadId":"t1","turnId":"turn-2"}`))
+	if b.Text != "Другое" {
+		t.Errorf("мысли разных ходов смешались: %q", b.Text)
+	}
+}

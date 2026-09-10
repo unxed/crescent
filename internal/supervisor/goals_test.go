@@ -96,7 +96,8 @@ func TestStuckActiveGoalIsNotConsideredMoving(t *testing.T) {
 	s := &Supervisor{
 		active:    map[string]time.Time{},
 		spend:     map[string]spendMark{},
-		startedAt: time.Now().Add(-2 * ProgressMaxAge), // grace period long over
+		samples:   map[string]int{"никогда-ничего-не-делала": 2, "давно-молчит": 2},
+		startedAt: time.Now().Add(-2 * ProgressMaxAge),
 	}
 
 	if s.isMoving("никогда-ничего-не-делала") {
@@ -123,13 +124,27 @@ func TestStuckActiveGoalIsNotConsideredMoving(t *testing.T) {
 
 // Right after startup nothing has been observed yet, and a goal genuinely
 // running elsewhere must not be restarted the instant the window opens.
-func TestFreshStartGivesGoalsGracePeriod(t *testing.T) {
+// The benefit of the doubt now lasts as long as it takes to earn an answer: one
+// reading of the usage counter tells nothing, two tell whether it moved. Waiting
+// a fixed five minutes meant a goal that had already stopped sat untouched for
+// five minutes at every start.
+func TestBenefitOfTheDoubtLastsTwoSamples(t *testing.T) {
 	s := &Supervisor{
 		active:    map[string]time.Time{},
 		spend:     map[string]spendMark{},
-		startedAt: time.Now(),
+		samples:   map[string]int{},
+		startedAt: time.Now().Add(-time.Hour), // возраст запуска больше ни на что не влияет
 	}
-	if !s.isMoving("ещё-не-наблюдали") {
-		t.Error("сразу после запуска цель уже объявлена застрявшей")
+
+	if !s.isMoving("цель") {
+		t.Error("до первого замера цель уже объявлена остановившейся")
+	}
+	s.samples["цель"] = 1
+	if !s.isMoving("цель") {
+		t.Error("одного замера хватило для вывода — сравнивать было не с чем")
+	}
+	s.samples["цель"] = 2
+	if s.isMoving("цель") {
+		t.Error("после двух замеров без роста цель всё ещё считается работающей")
 	}
 }

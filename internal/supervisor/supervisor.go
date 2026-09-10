@@ -194,10 +194,17 @@ type Supervisor struct {
 	// broken holds goals Codex cannot write history for, with the reason. No
 	// number of restarts fixes that, so crescent stops trying and says so.
 	broken map[string]string
+	// noisy remembers goals whose history discrepancy has already been
+	// mentioned, so it is said once instead of hundreds of times.
+	noisy map[string]bool
 	// trace, when set, receives one line per decision. Every pass so far left
 	// no record of what it examined or why it did nothing, so a loop that
 	// skipped every goal was indistinguishable from a loop that never ran.
 	trace func(string)
+	// samples counts how many times each goal's usage has been read. Two
+	// readings are the least that can show movement; until then a goal is
+	// neither proved working nor proved stopped.
+	samples map[string]int
 	// startedAt is when watching began, used to give goals one grace period
 	// before a stuck "active" is judged stuck.
 	startedAt time.Time
@@ -239,16 +246,25 @@ func New(o Options) *Supervisor {
 		turns:     map[string]string{},
 		spend:     map[string]spendMark{},
 		active:    map[string]time.Time{},
+		samples:   map[string]int{},
 		onChange:  o.OnChange,
 		wake:      make(chan struct{}, 1),
 		startedAt: time.Now(),
 		broken:    map[string]string{},
+		noisy:     map[string]bool{},
 		status:    Status{State: StateIdle, Since: time.Now()},
 	}
 }
 
-// NoteServerLine takes one line of app-server logging and, if it reports that a
-// thread's history cannot be written, remembers that the goal is beyond help.
+// NoteServerLine takes one line of app-server logging and records anything
+// worth a person's attention.
+//
+// It used to mark a goal unfixable on seeing "expected ordinal N, got N-1" and
+// stop restarting it. That was wrong: a probe run showed the model working
+// normally — 145 000 tokens and 293 message fragments in five minutes — while
+// those very lines were being logged. Codex notices the discrepancy itself,
+// falls back, and carries on. The line is noise; treating it as a verdict
+// silenced goals that were working.
 func (s *Supervisor) NoteServerLine(line string) {
 	if !appserver.IsHistoryDesynced(line) {
 		return
@@ -258,14 +274,14 @@ func (s *Supervisor) NoteServerLine(line string) {
 		return
 	}
 	s.mu.Lock()
-	_, known := s.broken[id]
-	s.broken[id] = "Codex не может записать историю этого треда"
+	known := s.noisy[id]
+	s.noisy[id] = true
 	s.mu.Unlock()
 
+	// Said once per goal, as information, with no consequence for restarts.
 	if !known {
-		s.note2(id, "перезапускать бесполезно: база истории Codex разошлась с файлом "+
-			"сессии. Закройте ChatGPT и уберите ~/.codex/thread_history_1.sqlite — "+
-			"она пересобирается из файлов сессий.")
+		s.note2(id, "Codex сообщает о расхождении истории треда и обходит его сам; "+
+			"на работу это не влияет")
 	}
 }
 
@@ -578,11 +594,19 @@ type spendMark struct {
 func (s *Supervisor) observeSpend(id, label string, goal appserver.Goal) (moving bool, note string) {
 	s.mu.Lock()
 	prev, seen := s.spend[id]
+	s.samples[id]++
 	now := time.Now()
 	grew := seen && goal.TokensUsed > prev.Tokens
-	if !seen || grew {
+	switch {
+	case grew:
 		s.spend[id] = spendMark{Tokens: goal.TokensUsed, Seconds: goal.TimeUsedSeconds, Moved: now}
-	} else {
+	case !seen:
+		// First sighting: record the counter, but leave Moved unset. Stamping
+		// it with the current time made the very act of looking count as
+		// movement, and the goal then read as working for the whole freshness
+		// window without a single token having been spent.
+		s.spend[id] = spendMark{Tokens: goal.TokensUsed, Seconds: goal.TimeUsedSeconds}
+	default:
 		s.spend[id] = spendMark{Tokens: goal.TokensUsed, Seconds: goal.TimeUsedSeconds, Moved: prev.Moved}
 	}
 	last := s.spend[id].Moved
@@ -647,7 +671,7 @@ func (s *Supervisor) survey(ctx context.Context) {
 // named wait beats a countdown.
 func (s *Supervisor) waitReason(id string, goal appserver.Goal) (string, time.Time) {
 	s.mu.Lock()
-	startedAt, started := s.startedAt, s.started[id]
+	started := s.started[id]
 	last := s.active[id]
 	mark, hasSpend := s.spend[id]
 	broken := s.broken[id]
@@ -665,8 +689,11 @@ func (s *Supervisor) waitReason(id string, goal appserver.Goal) (string, time.Ti
 	// The grace period: right after startup nothing has been observed yet, so a
 	// goal is given the benefit of the doubt. It was the single most confusing
 	// wait in the program, because nothing said it was happening.
-	if last.IsZero() && !hasSpend && time.Since(startedAt) < ProgressMaxAge {
-		return "льготный период после запуска", startedAt.Add(ProgressMaxAge)
+	s.mu.Lock()
+	n := s.samples[id]
+	s.mu.Unlock()
+	if last.IsZero() && n < 2 {
+		return "смотрю, растёт ли расход (замер 1 из 2)", time.Time{}
 	}
 	if !last.IsZero() && time.Since(last) < ProgressMaxAge {
 		return "работает: событие " + time.Since(last).Round(time.Second).String() + " назад", time.Time{}
@@ -695,10 +722,12 @@ func (s *Supervisor) isMoving(id string) bool {
 	if m, ok := s.spend[id]; ok && !m.Moved.IsZero() && time.Since(m.Moved) < ProgressMaxAge {
 		return true
 	}
-	// Nothing observed yet in this run: give it one grace period from start,
-	// so a goal genuinely working elsewhere is not restarted the instant
-	// crescent opens.
-	return time.Since(s.startedAt) < ProgressMaxAge
+	// Nothing observed yet. The benefit of the doubt lasts exactly as long as it
+	// takes to earn an answer: one sample tells nothing, two tell whether the
+	// count moved. Waiting a fixed five minutes meant a goal that had already
+	// stopped sat untouched for five minutes at every start — the single thing
+	// that made crescent look asleep.
+	return s.samples[id] < 2
 }
 
 // proveMovement establishes whether any pinned goal is really working, and
