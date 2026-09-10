@@ -345,6 +345,16 @@ func (s *Supervisor) NoteMessage(threadID, text string) {
 // AwaitingWord reports a goal stopped in plain speech, together with the words
 // it asked for. The phrase is empty when the goal is waiting but did not quote
 // one — then only a person can decide what to say.
+// tailOf returns the end of a message: what a goal asks for is said last.
+func tailOf(s string, n int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return "…" + string(r[len(r)-n:])
+}
+
 // FetchLastMessage asks the server what a goal said last, for goals that
 // blocked before this run began.
 func (s *Supervisor) FetchLastMessage(ctx context.Context, id string) {
@@ -371,8 +381,21 @@ func (s *Supervisor) FetchLastMessage(ctx context.Context, id string) {
 	if strings.TrimSpace(msg) == "" {
 		return
 	}
-	s.note2(id, "последнее сообщение цели прочитано, ищу в нём, что от вас требуется")
 	s.NoteMessage(id, msg)
+
+	// What the message actually says, when nothing actionable was found in it.
+	// Reporting only that the read succeeded left the next question — why no
+	// phrase — as unanswerable as the one before it.
+	switch {
+	case !appserver.AsksForConfirmation(msg):
+		s.note2(id, "сообщение цели прочитано, но в нём нет просьбы подтвердить; "+
+			"последние слова: "+tailOf(msg, 300))
+	case appserver.UnblockPhrase(msg) == "":
+		s.note2(id, "цель ждёт ответа, но не назвала фразу в кавычках; "+
+			"последние слова: "+tailOf(msg, 300))
+	default:
+		s.note2(id, "цель просит ответить: "+appserver.UnblockPhrase(msg))
+	}
 }
 
 func (s *Supervisor) AwaitingWord(id string) (waiting bool, phrase string) {

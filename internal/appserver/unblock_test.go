@@ -45,3 +45,30 @@ func TestNoPhraseWhenNoneIsQuoted(t *testing.T) {
 		}
 	}
 }
+
+// The same request is worded three ways, and matching only the imperative
+// missed two of them — a goal saying «требуется ваше подтверждение» read as a
+// goal that had simply finished.
+func TestAllWordingsCountAsWaiting(t *testing.T) {
+	waiting := []string{
+		"Для возобновления напишите: «да»",
+		"Цель заблокирована: требуется ваше подтверждение на merge.",
+		"Система безопасности требует явного разрешения на merge main.",
+		"Reply with \"approve\" to continue",
+	}
+	for _, msg := range waiting {
+		if !AsksForConfirmation(msg) {
+			t.Errorf("не опознано как ожидание: %q", msg)
+		}
+	}
+
+	done := []string{
+		"Готово: PR #1045 влит, ветка удалена.",
+		"CI зелёный, задача закрыта.",
+	}
+	for _, msg := range done {
+		if AsksForConfirmation(msg) {
+			t.Errorf("завершённая цель принята за ожидающую: %q", msg)
+		}
+	}
+}

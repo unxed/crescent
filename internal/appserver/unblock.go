@@ -49,9 +49,13 @@ func UnblockPhrase(message string) string {
 // "stopped and finished".
 func AsksForConfirmation(message string) bool {
 	low := strings.ToLower(message)
+	// Word stems, not whole words: a message says «подтвердите», «требуется
+	// ваше подтверждение» and «требует явного разрешения» for the same thing,
+	// and matching only the imperative missed two of the three.
 	for _, marker := range []string{
-		"для возобновления", "напишите", "напиши", "подтвердите",
-		"требует явного разрешения", "waiting for your", "reply with", "confirm",
+		"для возобновления", "напишите", "напиши", "ответьте",
+		"подтвержд", "разрешени", "разрешите", "заблокирован",
+		"waiting for your", "reply with", "confirm", "approval", "permission",
 	} {
 		if strings.Contains(low, marker) {
 			return true
