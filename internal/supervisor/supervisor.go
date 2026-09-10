@@ -213,6 +213,11 @@ type Supervisor struct {
 	// same block is answered once and a repeat means the goal said something
 	// new — not that we forgot we already replied.
 	granted map[string]string
+	// live is each thread's status as the event stream reports it, with when it
+	// arrived. thread/goal/get lags the thread, so a goal that answered a block
+	// and went back to work still reads as blocked there; this is the fresher
+	// answer and the one worth showing.
+	live map[string]liveStatus
 	// trace, when set, receives one line per decision. Every pass so far left
 	// no record of what it examined or why it did nothing, so a loop that
 	// skipped every goal was indistinguishable from a loop that never ran.
@@ -272,6 +277,7 @@ func New(o Options) *Supervisor {
 		answering: map[string]bool{},
 		statuses:  map[string]string{},
 		granted:   map[string]string{},
+		live:      map[string]liveStatus{},
 		status:    Status{State: StateIdle, Since: time.Now()},
 	}
 }
@@ -340,6 +346,34 @@ func (s *Supervisor) Broken(id string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.broken[id]
+}
+
+// liveStatus is a thread status seen in the event stream.
+type liveStatus struct {
+	Status string
+	At     time.Time
+}
+
+// NoteThreadStatus records the status the stream reports for a thread.
+func (s *Supervisor) NoteThreadStatus(threadID, status string) {
+	if threadID == "" || status == "" {
+		return
+	}
+	s.mu.Lock()
+	s.live[threadID] = liveStatus{Status: status, At: time.Now()}
+	s.mu.Unlock()
+}
+
+// shownStatus is what a goal's status line should say: the stream's word when
+// it is recent, the goal record otherwise.
+func (s *Supervisor) shownStatus(id, recorded string) string {
+	s.mu.Lock()
+	l := s.live[id]
+	s.mu.Unlock()
+	if l.Status != "" && time.Since(l.At) < ProgressMaxAge {
+		return l.Status
+	}
+	return recorded
 }
 
 // NoteMessage remembers what a goal last said.
@@ -921,7 +955,8 @@ func (s *Supervisor) proveMovement(ctx context.Context) {
 		s.statuses[id] = goal.Status
 		s.mu.Unlock()
 		sp := GoalSpend{Tokens: goal.TokensUsed, Seconds: goal.TimeUsedSeconds,
-			Status: goal.Status, LastSeen: lastSeen, Spending: grew || streaming}
+			Status: s.shownStatus(id, goal.Status), LastSeen: lastSeen,
+			Spending: grew || streaming}
 		if !appserver.Restartable(goal.Status) {
 			// The words it is waiting for live in its last message, and a goal
 			// blocked before this run began never said them where we could hear.

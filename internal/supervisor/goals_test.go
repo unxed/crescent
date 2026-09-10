@@ -196,3 +196,26 @@ func TestSameBlockIsAnsweredOnce(t *testing.T) {
 		t.Errorf("новое сообщение не распознано как новый запрос: %v %q", w, phrase)
 	}
 }
+
+// thread/goal/get lags the thread: a goal that answered a block and went back
+// to work still reads as blocked there, while the event stream already says
+// active. The line a person reads should carry the fresher word.
+func TestLiveThreadStatusIsShownOverTheGoalRecord(t *testing.T) {
+	s := &Supervisor{live: map[string]liveStatus{}}
+
+	// Nothing from the stream yet: the goal record is all there is.
+	if got := s.shownStatus("g", "blocked"); got != "blocked" {
+		t.Errorf("без свежих данных показан %q", got)
+	}
+
+	s.NoteThreadStatus("g", "active")
+	if got := s.shownStatus("g", "blocked"); got != "active" {
+		t.Errorf("показан устаревший статус %q вместо свежего active", got)
+	}
+
+	// A stale stream word gives way back to the record.
+	s.live["g"] = liveStatus{Status: "active", At: time.Now().Add(-2 * ProgressMaxAge)}
+	if got := s.shownStatus("g", "blocked"); got != "blocked" {
+		t.Errorf("устаревшее сообщение потока всё ещё в ходу: %q", got)
+	}
+}

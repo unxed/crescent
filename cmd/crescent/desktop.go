@@ -129,8 +129,13 @@ func runDesktop(codexPath, prompt string, verbose, wire, trace, serverLog bool, 
 		jour.Record(a)
 		d.sup.NoteTurn(a.ThreadID, a.TurnID)
 		d.sup.NoteActivity(a.ThreadID)
-		if a.Kind == "сообщение" {
+		switch a.Kind {
+		case "сообщение":
 			d.sup.NoteMessage(a.ThreadID, a.Text)
+		case "статус":
+			// The stream's own word about the thread, fresher than the goal
+			// record, which kept saying blocked while the goal worked.
+			d.sup.NoteThreadStatus(a.ThreadID, a.Text)
 		}
 	})
 
