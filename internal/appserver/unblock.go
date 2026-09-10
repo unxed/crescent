@@ -64,6 +64,59 @@ func AsksForConfirmation(message string) bool {
 	return false
 }
 
+// RecentAgentMessages returns the goal's recent messages, newest first.
+//
+// Reading only the newest was wrong: crescent's own restart makes the model
+// answer, so the newest message is that answer — "Продолжаю текущую цель с того
+// же места…" — while the explanation of the block sits a few messages back. The
+// request has to be looked for, not assumed to be last.
+func (c *Client) RecentAgentMessages(ctx context.Context, threadID string, n int) ([]string, error) {
+	raw, err := c.Call(ctx, "thread/items/list", map[string]any{
+		"threadId":      threadID,
+		"limit":         n,
+		"sortDirection": "desc",
+	})
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Data []struct {
+			Type    string    `json:"type"`
+			Text    string    `json:"text"`
+			Item    *listItem `json:"item"`
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil, fmt.Errorf("разбор ответа thread/items/list: %w", err)
+	}
+
+	var out []string
+	kinds := map[string]int{}
+	for _, it := range resp.Data {
+		typ, text := it.Type, it.Text
+		if it.Item != nil {
+			typ, text = it.Item.Type, it.Item.Text
+		}
+		if text == "" {
+			for _, cpart := range it.Content {
+				text += cpart.Text
+			}
+		}
+		kinds[typ]++
+		if typ == "agentMessage" && strings.TrimSpace(text) != "" {
+			out = append(out, text)
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("среди %d элементов нет сообщений модели (виды: %v)",
+			len(resp.Data), kinds)
+	}
+	return out, nil
+}
+
 // LastAgentMessage reads what a goal said last, straight from the thread.
 //
 // crescent only remembers messages it saw live, so a goal that blocked before

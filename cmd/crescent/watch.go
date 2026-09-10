@@ -115,6 +115,26 @@ func runWatch(codexPath string, selectors []string, prompt string, verbose bool,
 		}
 	}
 
+	// A spoken block is answered here too: -watch has no window to click in, so
+	// leaving it to a person means leaving it for ever.
+	go func() {
+		tick := time.NewTicker(15 * time.Second)
+		defer tick.Stop()
+		for range tick.C {
+			for _, id := range thePins.IDs() {
+				waiting, phrase := sup.AwaitingWord(id)
+				if !waiting || phrase == "" {
+					continue
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				if err := sup.SendWord(ctx, id, phrase); err != nil {
+					jour.Note("", thePins.Label(id)+": не удалось отправить подтверждение: "+err.Error())
+				}
+				cancel()
+			}
+		}
+	}()
+
 	sigctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return sup.Run(sigctx)

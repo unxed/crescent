@@ -364,7 +364,7 @@ func (s *Supervisor) FetchLastMessage(ctx context.Context, id string) {
 	if have {
 		return
 	}
-	msg, err := s.client.LastAgentMessage(ctx, id)
+	msgs, err := s.client.RecentAgentMessages(ctx, id, 30)
 	if err != nil {
 		// Said once per goal: swallowing this is what hid a whole round of
 		// investigation, because a request that failed looked exactly like a
@@ -378,8 +378,15 @@ func (s *Supervisor) FetchLastMessage(ctx context.Context, id string) {
 		}
 		return
 	}
-	if strings.TrimSpace(msg) == "" {
-		return
+	// The newest message that actually asks for something. Our own restart
+	// makes the model reply, so the newest message is usually that reply and
+	// the request is a few messages behind it.
+	msg := msgs[0]
+	for _, m := range msgs {
+		if appserver.AsksForConfirmation(m) {
+			msg = m
+			break
+		}
 	}
 	s.NoteMessage(id, msg)
 

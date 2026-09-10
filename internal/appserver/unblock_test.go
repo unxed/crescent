@@ -72,3 +72,30 @@ func TestAllWordingsCountAsWaiting(t *testing.T) {
 		}
 	}
 }
+
+// crescent's own restart makes the model answer, so the newest message is that
+// answer — «Продолжаю текущую цель с того же места…» — while the explanation of
+// the block sits a few messages behind it. Reading only the newest found the
+// reply and concluded there was nothing to confirm.
+func TestRequestIsFoundBeneathTheModelsReply(t *testing.T) {
+	newestFirst := []string{
+		"Продолжаю текущую цель с того же места: проверяю состояние уже запущенного CI.",
+		"",
+		"Цель заблокирована. Для возобновления напишите: «мержи PR #1030 и удаляй ветку».",
+		"Начинаю работу над целью.",
+	}
+
+	var found string
+	for _, m := range newestFirst {
+		if AsksForConfirmation(m) {
+			found = m
+			break
+		}
+	}
+	if found == "" {
+		t.Fatal("просьба не найдена среди недавних сообщений")
+	}
+	if got := UnblockPhrase(found); got != "мержи PR #1030 и удаляй ветку" {
+		t.Errorf("фраза извлечена неверно: %q", got)
+	}
+}
