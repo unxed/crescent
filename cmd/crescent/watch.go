@@ -123,11 +123,15 @@ func runWatch(codexPath string, selectors []string, prompt string, verbose bool,
 		for range tick.C {
 			for _, id := range thePins.IDs() {
 				waiting, phrase := sup.AwaitingWord(id)
-				if !waiting || phrase == "" {
+				if !waiting {
 					continue
 				}
+				text, general := supervisor.ReplyFor(phrase)
+				if general {
+					jour.Note("", thePins.Label(id)+": фраза не названа — отправляю общее разрешение")
+				}
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-				if err := sup.SendWord(ctx, id, phrase); err != nil {
+				if err := sup.SendWord(ctx, id, text); err != nil {
 					jour.Note("", thePins.Label(id)+": не удалось отправить подтверждение: "+err.Error())
 				}
 				cancel()

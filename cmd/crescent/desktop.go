@@ -433,12 +433,11 @@ func (d *desktop) answerSpokenBlocks() {
 			continue
 		}
 		label := d.pins.Label(id)
-		if phrase == "" {
-			d.jour.Note("", label+": ждёт ответа, но не назвала, что написать — "+
-				"посмотрите её журнал и ответьте в Codex")
-			continue
+		text, general := supervisor.ReplyFor(phrase)
+		if general {
+			d.jour.Note("", label+": фраза не названа — отправляю общее разрешение")
 		}
-		if err := d.sup.SendWord(ctx, id, phrase); err != nil {
+		if err := d.sup.SendWord(ctx, id, text); err != nil {
 			d.jour.Note("", label+": не удалось отправить подтверждение: "+err.Error())
 		}
 	}

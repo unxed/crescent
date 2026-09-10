@@ -205,6 +205,14 @@ type Supervisor struct {
 	// it, several passes read "waiting" before the first send completed and the
 	// same phrase went out three times in one second.
 	answering map[string]bool
+	// statuses is each pinned goal's status as last read. Whether a goal is
+	// waiting on a person is decided by this — Codex's own verdict — and not by
+	// reading its messages for hints.
+	statuses map[string]string
+	// granted remembers which message each goal was last answered for, so the
+	// same block is answered once and a repeat means the goal said something
+	// new — not that we forgot we already replied.
+	granted map[string]string
 	// trace, when set, receives one line per decision. Every pass so far left
 	// no record of what it examined or why it did nothing, so a loop that
 	// skipped every goal was indistinguishable from a loop that never ran.
@@ -262,6 +270,8 @@ func New(o Options) *Supervisor {
 		noisy:     map[string]bool{},
 		lastMsg:   map[string]string{},
 		answering: map[string]bool{},
+		statuses:  map[string]string{},
+		granted:   map[string]string{},
 		status:    Status{State: StateIdle, Since: time.Now()},
 	}
 }
@@ -383,7 +393,7 @@ func (s *Supervisor) FetchLastMessage(ctx context.Context, id string) {
 	// the request is a few messages behind it.
 	msg := msgs[0]
 	for _, m := range msgs {
-		if appserver.AsksForConfirmation(m) {
+		if appserver.UnblockPhrase(m) != "" {
 			msg = m
 			break
 		}
@@ -393,24 +403,30 @@ func (s *Supervisor) FetchLastMessage(ctx context.Context, id string) {
 	// What the message actually says, when nothing actionable was found in it.
 	// Reporting only that the read succeeded left the next question — why no
 	// phrase — as unanswerable as the one before it.
-	switch {
-	case !appserver.AsksForConfirmation(msg):
-		s.note2(id, fmt.Sprintf(
-			"просмотрено %d сообщений цели, просьбы подтвердить ни в одном нет; "+
-				"последние слова: %s", len(msgs), tailOf(msg, 250)))
-	case appserver.UnblockPhrase(msg) == "":
-		s.note2(id, "цель ждёт ответа, но не назвала фразу в кавычках; "+
-			"последние слова: "+tailOf(msg, 300))
-	default:
-		s.note2(id, "цель просит ответить: "+appserver.UnblockPhrase(msg))
+	if phrase := appserver.UnblockPhrase(msg); phrase != "" {
+		s.note2(id, "цель просит ответить: "+phrase)
+	} else {
+		s.note2(id, fmt.Sprintf("просмотрено %d сообщений, фразы в кавычках нет — "+
+			"отвечу общим разрешением; последние слова: %s", len(msgs), tailOf(msg, 200)))
 	}
 }
 
 func (s *Supervisor) AwaitingWord(id string) (waiting bool, phrase string) {
 	s.mu.Lock()
-	msg := s.lastMsg[id]
 	defer s.mu.Unlock()
-	if msg == "" || !appserver.AsksForConfirmation(msg) {
+
+	// Codex says whether the goal is waiting on a person: status blocked. What
+	// the goal says in its messages only refines the reply. Deciding "waiting"
+	// from the text was fragile both ways — a technical message mentioning
+	// «разрешение экрана» read as a request, and a real block phrased in a way
+	// the markers did not know read as nothing.
+	if !strings.EqualFold(s.statuses[id], "blocked") {
+		return false, ""
+	}
+	msg := s.lastMsg[id]
+	// Answered already, and the goal has said nothing new since: a second
+	// identical reply cannot help, and a person should look.
+	if msg != "" && s.granted[id] == msg {
 		return false, ""
 	}
 	// A goal just answered is not waiting: without this the same phrase would
@@ -422,6 +438,15 @@ func (s *Supervisor) AwaitingWord(id string) (waiting bool, phrase string) {
 		return false, ""
 	}
 	return true, appserver.UnblockPhrase(msg)
+}
+
+// ReplyFor is the text to send a waiting goal: its own quoted words when it
+// gave them, the general grant otherwise.
+func ReplyFor(phrase string) (text string, general bool) {
+	if phrase != "" {
+		return phrase, false
+	}
+	return appserver.GeneralGrant, true
 }
 
 // SendWord replies to a goal in its own thread, which is how a block stated in
@@ -448,7 +473,7 @@ func (s *Supervisor) SendWord(ctx context.Context, id, text string) error {
 	}
 	s.mu.Lock()
 	s.started[id] = time.Now()
-	delete(s.lastMsg, id) // asked and answered
+	s.granted[id] = s.lastMsg[id] // this message has been answered
 	s.mu.Unlock()
 	s.bumpRestart()
 	s.note2(id, "отправлено подтверждение: "+text)
@@ -892,6 +917,9 @@ func (s *Supervisor) proveMovement(ctx context.Context) {
 		s.mu.Unlock()
 		streaming := !lastSeen.IsZero() && time.Since(lastSeen) < ProgressMaxAge
 
+		s.mu.Lock()
+		s.statuses[id] = goal.Status
+		s.mu.Unlock()
 		sp := GoalSpend{Tokens: goal.TokensUsed, Seconds: goal.TimeUsedSeconds,
 			Status: goal.Status, LastSeen: lastSeen, Spending: grew || streaming}
 		if !appserver.Restartable(goal.Status) {

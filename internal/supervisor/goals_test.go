@@ -148,3 +148,51 @@ func TestBenefitOfTheDoubtLastsTwoSamples(t *testing.T) {
 		t.Error("после двух замеров без роста цель всё ещё считается работающей")
 	}
 }
+
+// Whether a goal is waiting on a person is Codex's verdict — status blocked —
+// not a reading of its messages. Deciding from the text was fragile both ways:
+// a technical message about «разрешение экрана» read as a request, and a real
+// block phrased in words the markers did not know read as nothing.
+func TestWaitingIsDecidedByStatusNotByText(t *testing.T) {
+	s := &Supervisor{
+		statuses:  map[string]string{"stuck": "blocked", "busy": "active"},
+		lastMsg:   map[string]string{"stuck": "Резолюция окна: разрешение экрана 1920x1080.", "busy": "Для возобновления напишите: «да»"},
+		granted:   map[string]string{},
+		started:   map[string]time.Time{},
+		answering: map[string]bool{},
+	}
+
+	if w, _ := s.AwaitingWord("busy"); w {
+		t.Error("активная цель объявлена ожидающей из-за текста сообщения")
+	}
+	w, phrase := s.AwaitingWord("stuck")
+	if !w {
+		t.Fatal("заблокированная цель не считается ожидающей")
+	}
+	if phrase != "" {
+		t.Errorf("из технического текста извлечена фраза %q", phrase)
+	}
+	// No quoted phrase → the general grant goes out.
+	if text, general := ReplyFor(phrase); !general || text == "" {
+		t.Error("без фразы должно уходить общее разрешение")
+	}
+}
+
+// One reply per message. Answering the same block twice cannot help; a second
+// reply means the goal said something new.
+func TestSameBlockIsAnsweredOnce(t *testing.T) {
+	s := &Supervisor{
+		statuses:  map[string]string{"g": "blocked"},
+		lastMsg:   map[string]string{"g": "Цель заблокирована."},
+		granted:   map[string]string{"g": "Цель заблокирована."}, // already answered
+		started:   map[string]time.Time{},
+		answering: map[string]bool{},
+	}
+	if w, _ := s.AwaitingWord("g"); w {
+		t.Error("на уже отвеченное сообщение собираемся ответить снова")
+	}
+	s.lastMsg["g"] = "Теперь нужно другое: напишите «продолжай»"
+	if w, phrase := s.AwaitingWord("g"); !w || phrase != "продолжай" {
+		t.Errorf("новое сообщение не распознано как новый запрос: %v %q", w, phrase)
+	}
+}
