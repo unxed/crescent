@@ -53,7 +53,7 @@ type desktop struct {
 	cancel context.CancelFunc
 }
 
-func runDesktop(codexPath, prompt string, verbose, wire bool) error {
+func runDesktop(codexPath, prompt string, verbose, wire, trace bool) error {
 	// One crescent at a time. Two of them take turns on the same threads and
 	// each sees the other's turn as "already has an active writer".
 	lock, err := holdSingleInstance()
@@ -118,6 +118,15 @@ func runDesktop(codexPath, prompt string, verbose, wire bool) error {
 		client.Close()
 		jour.Close()
 		return err
+	}
+
+	if trace {
+		if path, err := jour.OpenTrace(); err == nil {
+			fmt.Println("решения пишутся:", path)
+			d.sup.SetTrace(jour.Trace)
+		} else {
+			fmt.Println("не удалось открыть запись решений:", err)
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

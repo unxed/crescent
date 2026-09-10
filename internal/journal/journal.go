@@ -94,7 +94,8 @@ type Journal struct {
 	server *rotatingFile
 	// wire is the verbatim protocol, opened only when asked for: it is large
 	// and it is for investigation, not for reading day to day.
-	wire *rotatingFile
+	wire  *rotatingFile
+	trace *rotatingFile
 }
 
 // Dir is where journals live: a subdirectory of the user cache.
@@ -146,6 +147,28 @@ func (j *Journal) OpenWire() (string, error) {
 	j.wire = f
 	j.mu.Unlock()
 	return path, nil
+}
+
+// OpenTrace starts recording the decision trace into decisions.log.
+func (j *Journal) OpenTrace() (string, error) {
+	path := filepath.Join(j.dir, "decisions.log")
+	f, err := newRotatingFile(path)
+	if err != nil {
+		return "", err
+	}
+	j.mu.Lock()
+	j.trace = f
+	j.mu.Unlock()
+	return path, nil
+}
+
+// Trace records one decision line.
+func (j *Journal) Trace(line string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.trace != nil {
+		fmt.Fprintf(j.trace, "%s %s\n", time.Now().Format("15:04:05.000"), line)
+	}
 }
 
 // Wire records one line of the protocol, in the direction given.
@@ -345,6 +368,9 @@ func (j *Journal) Close() {
 	}
 	if j.wire != nil {
 		_ = j.wire.Close()
+	}
+	if j.trace != nil {
+		_ = j.trace.Close()
 	}
 }
 

@@ -189,6 +189,10 @@ type Supervisor struct {
 	// broken holds goals Codex cannot write history for, with the reason. No
 	// number of restarts fixes that, so crescent stops trying and says so.
 	broken map[string]string
+	// trace, when set, receives one line per decision. Every pass so far left
+	// no record of what it examined or why it did nothing, so a loop that
+	// skipped every goal was indistinguishable from a loop that never ran.
+	trace func(string)
 	// startedAt is when watching began, used to give goals one grace period
 	// before a stuck "active" is judged stuck.
 	startedAt time.Time
@@ -257,6 +261,36 @@ func (s *Supervisor) NoteServerLine(line string) {
 		s.note2(id, "перезапускать бесполезно: база истории Codex разошлась с файлом "+
 			"сессии. Закройте ChatGPT и уберите ~/.codex/thread_history_1.sqlite — "+
 			"она пересобирается из файлов сессий.")
+	}
+}
+
+// startedFor is when this goal was last pushed, for the trace.
+func (s *Supervisor) startedFor(id string) time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.started[id]
+}
+
+func sinceOrNever(t time.Time) string {
+	if t.IsZero() {
+		return "никогда"
+	}
+	return time.Since(t).Round(time.Second).String() + " назад"
+}
+
+// SetTrace turns on the decision trace.
+func (s *Supervisor) SetTrace(fn func(string)) {
+	s.mu.Lock()
+	s.trace = fn
+	s.mu.Unlock()
+}
+
+func (s *Supervisor) tracef(format string, a ...any) {
+	s.mu.Lock()
+	fn := s.trace
+	s.mu.Unlock()
+	if fn != nil {
+		fn(fmt.Sprintf(format, a...))
 	}
 }
 
@@ -432,7 +466,14 @@ func (s *Supervisor) bumpRestart() {
 func (s *Supervisor) Run(ctx context.Context) error {
 	s.note("наблюдение запущено")
 	go s.heartbeat(ctx)
+
+	// A pass counter in the trace: silence then means the loop stopped, not
+	// that it looked and found nothing to do. Those two were indistinguishable
+	// in every log so far.
+	pass := 0
 	for {
+		pass++
+		s.tracef("=== проход %d, %s ===", pass, time.Now().Format("15:04:05"))
 		if ctx.Err() != nil {
 			s.note("цикл наблюдения остановлен: " + ctx.Err().Error())
 			s.set(StateIdle, "остановлено", time.Time{})
@@ -440,6 +481,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		}
 
 		if s.Paused() {
+			s.tracef("--- проход: пауза ---")
 			s.set(StatePaused, "", time.Time{})
 			// Monitoring continues through a pause: the limit is still read and
 			// the goals are still surveyed, so the window keeps telling the
@@ -452,6 +494,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		}
 
 		if s.pins.Count() == 0 {
+			s.tracef("--- проход: нет закреплённых целей ---")
 			s.set(StateNoGoals, "", time.Time{})
 			if !s.sleep(ctx) {
 				return nil
@@ -489,6 +532,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			continue
 		}
 		if limited, at := limits.Exhausted(); limited {
+			s.tracef("--- проход: лимит исчерпан, ждём до %s ---", at.Local().Format("15:04:05"))
 			s.set(StateLimited, "", at)
 			if !s.sleep(ctx) {
 				return nil
@@ -497,6 +541,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		}
 
 		s.set(StateWorking, "", time.Time{})
+		s.tracef("--- проход: лимит позволяет, целей закреплено %d ---", s.pins.Count())
 		s.restartPinned(ctx)
 
 		// After the pass, tell the truth about it: if nothing got through, the
@@ -710,25 +755,38 @@ func (s *Supervisor) restartPinned(ctx context.Context) {
 		goal, err := s.client.Goal(ctx, id)
 		if err != nil {
 			if s.forgetIfGone(id, err) {
+				s.tracef("  %s: снята — треда нет", label)
 				continue
 			}
+			s.tracef("  %s: ПРОПУСК — состояние не прочитано: %v", label, err)
 			s.note2(id, "состояние не прочитано: "+err.Error())
 			continue
 		}
 		if why := s.Broken(id); why != "" {
-			continue // restarting cannot fix a store that refuses the write
+			s.tracef("  %s: ПРОПУСК — %s", label, why)
+			continue
 		}
+		moving := s.isMoving(id)
+		s.tracef("  %s: статус=%q объектив=%v движется=%v последний_запуск=%s",
+			label, goal.Status, goal.Set(), moving, sinceOrNever(s.startedFor(id)))
 		switch {
 		case !goal.Set():
+			s.tracef("  %s: ПРОПУСК — у треда нет цели", label)
 			continue
 		case !appserver.Restartable(goal.Status):
+			s.tracef("  %s: ПРОПУСК — статус %q не перезапускается", label, goal.Status)
 			continue
-		case strings.EqualFold(goal.Status, appserver.StatusActive) && s.isMoving(id):
-			continue // really moving: spending tokens or producing events
+		case strings.EqualFold(goal.Status, appserver.StatusActive) && moving:
+			s.tracef("  %s: ПРОПУСК — работает по-настоящему", label)
+			continue
 		case time.Since(s.started[id]) < 2*time.Minute:
-			continue // just pushed; let the turn appear
+			s.tracef("  %s: ПРОПУСК — запущена %s назад, ждём появления хода",
+				label, time.Since(s.started[id]).Round(time.Second))
+			continue
 		}
+		s.tracef("  %s: ЗАПУСКАЮ (resume + turn/start)", label)
 		if err := s.client.Restart(ctx, id, s.prompt); err != nil {
+			s.tracef("  %s: ЗАПУСК НЕ УДАЛСЯ: %v", label, err)
 			s.note2(id, "запустить не удалось: "+err.Error())
 			s.mu.Lock()
 			s.fails++
