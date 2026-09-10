@@ -1,6 +1,8 @@
 package appserver
 
 import (
+	"context"
+	"encoding/json"
 	"regexp"
 	"strings"
 )
@@ -55,4 +57,36 @@ func AsksForConfirmation(message string) bool {
 		}
 	}
 	return false
+}
+
+// LastAgentMessage reads what a goal said last, straight from the thread.
+//
+// crescent only remembers messages it saw live, so a goal that blocked before
+// this run started left nothing to read — and the words it asked for are only
+// in that message. thread/items/list is the documented way to fetch them, newest
+// first, without touching files or guessing.
+func (c *Client) LastAgentMessage(ctx context.Context, threadID string) (string, error) {
+	raw, err := c.Call(ctx, "thread/items/list", map[string]any{
+		"threadId":      threadID,
+		"limit":         20,
+		"sortDirection": "desc",
+	})
+	if err != nil {
+		return "", err
+	}
+	var resp struct {
+		Data []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return "", err
+	}
+	for _, it := range resp.Data {
+		if it.Type == "agentMessage" && strings.TrimSpace(it.Text) != "" {
+			return it.Text, nil
+		}
+	}
+	return "", nil
 }

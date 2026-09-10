@@ -536,7 +536,15 @@ func (d *desktop) render(s supervisor.Status) {
 	for _, r := range d.rows {
 		text := r.label
 		if sp, ok := s.PerGoal[r.id]; ok {
+			// Each goal carries its own lamp: one lamp for the program said
+			// РАБОТАЕТ while a goal stood blocked, which is true of the account
+			// and misleading about the work.
+			lamp, why := sp.Lamp()
+			text = lamp.Symbol() + " " + r.label
 			text += fmt.Sprintf("  [%s]  %d токенов", sp.Status, sp.Tokens)
+			if why != "" && sp.Waiting == "" {
+				text += "  — " + why
+			}
 			// Whatever this goal is waiting for, said in words, with the time
 			// left when there is one. Silence during a wait was the single
 			// thing that made the program look broken while it worked.

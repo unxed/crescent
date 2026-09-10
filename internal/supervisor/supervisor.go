@@ -201,6 +201,10 @@ type Supervisor struct {
 	// speech names in it the words it wants to hear back, and there is nowhere
 	// else to read them.
 	lastMsg map[string]string
+	// answering holds goals whose confirmation is being sent right now. Without
+	// it, several passes read "waiting" before the first send completed and the
+	// same phrase went out three times in one second.
+	answering map[string]bool
 	// trace, when set, receives one line per decision. Every pass so far left
 	// no record of what it examined or why it did nothing, so a loop that
 	// skipped every goal was indistinguishable from a loop that never ran.
@@ -257,6 +261,7 @@ func New(o Options) *Supervisor {
 		broken:    map[string]string{},
 		noisy:     map[string]bool{},
 		lastMsg:   map[string]string{},
+		answering: map[string]bool{},
 		status:    Status{State: StateIdle, Since: time.Now()},
 	}
 }
@@ -340,6 +345,22 @@ func (s *Supervisor) NoteMessage(threadID, text string) {
 // AwaitingWord reports a goal stopped in plain speech, together with the words
 // it asked for. The phrase is empty when the goal is waiting but did not quote
 // one — then only a person can decide what to say.
+// FetchLastMessage asks the server what a goal said last, for goals that
+// blocked before this run began.
+func (s *Supervisor) FetchLastMessage(ctx context.Context, id string) {
+	s.mu.Lock()
+	_, have := s.lastMsg[id]
+	s.mu.Unlock()
+	if have {
+		return
+	}
+	msg, err := s.client.LastAgentMessage(ctx, id)
+	if err != nil || strings.TrimSpace(msg) == "" {
+		return
+	}
+	s.NoteMessage(id, msg)
+}
+
 func (s *Supervisor) AwaitingWord(id string) (waiting bool, phrase string) {
 	s.mu.Lock()
 	msg := s.lastMsg[id]
@@ -349,6 +370,9 @@ func (s *Supervisor) AwaitingWord(id string) (waiting bool, phrase string) {
 	}
 	// A goal just answered is not waiting: without this the same phrase would
 	// be sent again on every pass until the goal's next message arrived.
+	if s.answering[id] {
+		return false, "" // a confirmation is already on its way
+	}
 	if last := s.started[id]; !last.IsZero() && time.Since(last) < 2*time.Minute {
 		return false, ""
 	}
@@ -358,6 +382,19 @@ func (s *Supervisor) AwaitingWord(id string) (waiting bool, phrase string) {
 // SendWord replies to a goal in its own thread, which is how a block stated in
 // plain speech is lifted.
 func (s *Supervisor) SendWord(ctx context.Context, id, text string) error {
+	s.mu.Lock()
+	if s.answering[id] {
+		s.mu.Unlock()
+		return nil // already going out
+	}
+	s.answering[id] = true
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.answering, id)
+		s.mu.Unlock()
+	}()
+
 	if err := s.client.Resume(ctx, id); err != nil {
 		return err
 	}
@@ -667,7 +704,10 @@ func (s *Supervisor) observeSpend(id, label string, goal appserver.Goal) (moving
 		return true, fmt.Sprintf("%s: +%d токенов (всего %d)",
 			label, goal.TokensUsed-prev.Tokens, goal.TokensUsed)
 	}
-	if seen && now.Sub(last) > ProgressMaxAge {
+	// Only when there is a moment to measure from. Reporting time since the
+	// zero value printed "токены не тратятся 2562047h47m0s", which is the age
+	// of the universe according to Go.
+	if seen && !last.IsZero() && now.Sub(last) > ProgressMaxAge {
 		return false, fmt.Sprintf("%s: токены не тратятся %s (статус %s)",
 			label, now.Sub(last).Round(time.Minute), goal.Status)
 	}
@@ -805,11 +845,17 @@ func (s *Supervisor) proveMovement(ctx context.Context) {
 		s.mu.Lock()
 		lastSeen := s.active[id]
 		s.mu.Unlock()
+		streaming := !lastSeen.IsZero() && time.Since(lastSeen) < ProgressMaxAge
+
 		sp := GoalSpend{Tokens: goal.TokensUsed, Seconds: goal.TimeUsedSeconds,
-			Status: goal.Status, LastSeen: lastSeen}
+			Status: goal.Status, LastSeen: lastSeen, Spending: grew || streaming}
+		if !appserver.Restartable(goal.Status) {
+			// The words it is waiting for live in its last message, and a goal
+			// blocked before this run began never said them where we could hear.
+			s.FetchLastMessage(ctx, id)
+		}
 		sp.Waiting, sp.Until = s.waitReason(id, goal)
 		perGoal[id] = sp
-		streaming := !lastSeen.IsZero() && time.Since(lastSeen) < ProgressMaxAge
 
 		switch {
 		case grew:
@@ -994,6 +1040,13 @@ type GoalSpend struct {
 	// Empty means it is not waiting on anything.
 	Waiting string
 	Until   time.Time
+	// Spending is whether this goal's own usage grew since the last look.
+	Spending bool
+}
+
+// Lamp is this goal's own traffic light.
+func (g GoalSpend) Lamp() (Lamp, string) {
+	return GoalLamp(g.Status, g.Waiting, g.Spending)
 }
 
 type GoalView struct {

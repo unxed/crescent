@@ -179,3 +179,30 @@ func TestActiveElsewhereIsNotOurWork(t *testing.T) {
 		t.Errorf("причина не объяснена: %q", why)
 	}
 }
+
+// One lamp for the whole program said РАБОТАЕТ while a goal stood blocked:
+// true of the account, misleading about the work. Each goal answers for itself.
+func TestEachGoalHasItsOwnLamp(t *testing.T) {
+	cases := []struct {
+		status, waiting string
+		spending        bool
+		want            Lamp
+	}{
+		{"blocked", "ждёт вас", false, LampRed},
+		{"", "", false, LampRed},
+		{"active", "", true, LampGreen},
+		{"complete", "", false, LampGreen},
+		{"active", "запущена, жду появления хода", false, LampYellow},
+		{"active", "", false, LampYellow},
+	}
+	for _, c := range cases {
+		got, why := GoalLamp(c.status, c.waiting, c.spending)
+		if got != c.want {
+			t.Errorf("статус=%q ожидание=%q тратит=%v → %v (%s), ожидалось %v",
+				c.status, c.waiting, c.spending, got, why, c.want)
+		}
+		if why == "" {
+			t.Errorf("статус=%q: лампа без объяснения", c.status)
+		}
+	}
+}

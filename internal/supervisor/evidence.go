@@ -1,6 +1,9 @@
 package supervisor
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // How long each kind of proof stays good. A fact's life must exceed the
 // interval at which it is refreshed, or a healthy system flickers red; and it
@@ -143,4 +146,26 @@ func (e Evidence) Lamp(now time.Time) (Lamp, string) {
 		return LampGreen, e.Progress
 	}
 	return LampGreen, "работа идёт"
+}
+
+// GoalLamp is the traffic light for one goal, judged only by what is known
+// about that goal.
+//
+// A single lamp for the whole program said РАБОТАЕТ while one of three goals
+// stood blocked: true of the account, misleading about the work. Each goal now
+// answers for itself.
+func GoalLamp(status, waiting string, spending bool) (Lamp, string) {
+	switch {
+	case status == "":
+		return LampRed, "состояние неизвестно"
+	case strings.EqualFold(status, "blocked"):
+		return LampRed, "ждёт вашего слова"
+	case strings.EqualFold(status, "complete"):
+		return LampGreen, "завершена"
+	case spending:
+		return LampGreen, "работает"
+	case waiting != "":
+		return LampYellow, waiting
+	}
+	return LampYellow, "стоит"
 }
