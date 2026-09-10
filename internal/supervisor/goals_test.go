@@ -178,19 +178,29 @@ func TestWaitingIsDecidedByStatusNotByText(t *testing.T) {
 	}
 }
 
-// One reply per message. Answering the same block twice cannot help; a second
-// reply means the goal said something new.
-func TestSameBlockIsAnsweredOnce(t *testing.T) {
+// One reply per message, then silence — but not for ever. A stuck goal says
+// nothing at all, so waiting for a new message meant waiting indefinitely: a
+// live run stood blocked for three hours after a single answer, in silence.
+func TestBlockedGoalIsAnsweredAgainAfterCooldown(t *testing.T) {
 	s := &Supervisor{
 		statuses:  map[string]string{"g": "blocked"},
 		lastMsg:   map[string]string{"g": "Цель заблокирована."},
-		granted:   map[string]string{"g": "Цель заблокирована."}, // already answered
+		granted:   map[string]string{"g": "Цель заблокирована."},
+		grantedAt: map[string]time.Time{"g": time.Now()}, // answered just now
 		started:   map[string]time.Time{},
 		answering: map[string]bool{},
 	}
 	if w, _ := s.AwaitingWord("g"); w {
-		t.Error("на уже отвеченное сообщение собираемся ответить снова")
+		t.Error("сразу после ответа собираемся ответить снова")
 	}
+
+	// The cooling-off period has passed and the goal is still blocked.
+	s.grantedAt["g"] = time.Now().Add(-RetryBlockedAfter - time.Minute)
+	if w, _ := s.AwaitingWord("g"); !w {
+		t.Error("после выдержки заблокированная цель так и не получит второго ответа")
+	}
+	// A new message is answered without waiting for the cooldown.
+	s.grantedAt["g"] = time.Now()
 	s.lastMsg["g"] = "Теперь нужно другое: напишите «продолжай»"
 	if w, phrase := s.AwaitingWord("g"); !w || phrase != "продолжай" {
 		t.Errorf("новое сообщение не распознано как новый запрос: %v %q", w, phrase)

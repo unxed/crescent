@@ -220,6 +220,9 @@ type Supervisor struct {
 	// same block is answered once and a repeat means the goal said something
 	// new — not that we forgot we already replied.
 	granted map[string]string
+	// grantedAt is when each goal was last answered, so a goal that stayed
+	// blocked can be answered again rather than waited on for ever.
+	grantedAt map[string]time.Time
 	// live is each thread's status as the event stream reports it, with when it
 	// arrived. thread/goal/get lags the thread, so a goal that answered a block
 	// and went back to work still reads as blocked there; this is the fresher
@@ -284,6 +287,7 @@ func New(o Options) *Supervisor {
 		answering: map[string]bool{},
 		statuses:  map[string]string{},
 		granted:   map[string]string{},
+		grantedAt: map[string]time.Time{},
 		live:      map[string]liveStatus{},
 		status:    Status{State: StateIdle, Since: time.Now()},
 	}
@@ -473,10 +477,14 @@ func (s *Supervisor) AwaitingWord(id string) (waiting bool, phrase string) {
 		return false, ""
 	}
 	msg := s.lastMsg[id]
-	// Answered already, and the goal has said nothing new since: a second
-	// identical reply cannot help, and a person should look.
+	// Answered already, and the goal has said nothing new since. A stuck goal
+	// says nothing at all, so "wait for a new message" meant waiting for ever:
+	// a live run stood blocked for three hours after one answer, silently. Try
+	// again after a cooling-off period instead, and say so each time.
 	if msg != "" && s.granted[id] == msg {
-		return false, ""
+		if time.Since(s.grantedAt[id]) < RetryBlockedAfter {
+			return false, ""
+		}
 	}
 	// A goal just answered is not waiting: without this the same phrase would
 	// be sent again on every pass until the goal's next message arrived.
@@ -514,6 +522,10 @@ func (s *Supervisor) SendWord(ctx context.Context, id, text string) error {
 		s.mu.Unlock()
 	}()
 
+	s.mu.Lock()
+	again := !s.grantedAt[id].IsZero()
+	s.mu.Unlock()
+
 	if err := s.client.Resume(ctx, id); err != nil {
 		return err
 	}
@@ -523,9 +535,14 @@ func (s *Supervisor) SendWord(ctx context.Context, id, text string) error {
 	s.mu.Lock()
 	s.started[id] = time.Now()
 	s.granted[id] = s.lastMsg[id] // this message has been answered
+	s.grantedAt[id] = time.Now()
 	s.mu.Unlock()
 	s.bumpRestart()
-	s.note2(id, "отправлено подтверждение: "+text)
+	if again {
+		s.note2(id, "цель осталась заблокированной после прошлого ответа — отвечаю снова: "+text)
+	} else {
+		s.note2(id, "отправлено подтверждение: "+text)
+	}
 	return nil
 }
 
@@ -899,6 +916,18 @@ func (s *Supervisor) waitReason(id string, goal appserver.Goal) (string, time.Ti
 	case broken != "":
 		return broken, time.Time{}
 	case !appserver.Restartable(shown):
+		// Say what crescent has already tried. Silence after an unsuccessful
+		// answer looked exactly like doing nothing, for hours.
+		s.mu.Lock()
+		at := s.grantedAt[id]
+		s.mu.Unlock()
+		if !at.IsZero() {
+			next := at.Add(RetryBlockedAfter)
+			if time.Now().Before(next) {
+				return "разрешение отправлено, но цель осталась заблокированной; повторю", next
+			}
+			return "разрешение не помогло — нужен ваш ответ в Codex", time.Time{}
+		}
 		return "ждёт вас: статус " + shown, time.Time{}
 	case !started.IsZero() && time.Since(started) < 2*time.Minute:
 		return "запущена, жду появления хода", started.Add(2 * time.Minute)
