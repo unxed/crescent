@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
@@ -78,6 +79,20 @@ func runWatch(codexPath string, selectors []string, prompt string, verbose bool,
 		OnChange: func(s supervisor.Status) {
 			fmt.Printf("%s  %s\n", time.Now().Format("15:04:05"), s.Line())
 		},
+	})
+
+	// Unattended by definition: there is no window to show a prompt in, so a
+	// request nobody answers would simply stall the turn for ever.
+	client.SetRequestHandler(func(id int, method string, params json.RawMessage) {
+		if !appserver.IsApprovalRequest(method) {
+			return
+		}
+		summary := appserver.ApprovalSummary(method, params)
+		if err := client.Respond(id, appserver.ApprovalAnswer(method, params)); err != nil {
+			jour.Note("", "не удалось ответить на запрос разрешения: "+err.Error())
+			return
+		}
+		jour.Note("", "разрешено автоматически: "+summary)
 	})
 
 	client.SetStderrSink(func(line string) {

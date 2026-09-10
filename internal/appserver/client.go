@@ -32,12 +32,18 @@ type Client struct {
 	out    *bufio.Scanner
 	stderr *bufio.Scanner
 
-	mu       sync.Mutex
-	nextID   int
-	pending  map[int]chan rpcResponse
-	notify   func(method string, params json.RawMessage)
-	activity func(Activity)
-	stderrFn func(string)
+	mu sync.Mutex
+	// writeMu serialises writes to the server's stdin: a response can be sent
+	// from a request handler while a call is in flight.
+	writeMu sync.Mutex
+	// onRequest answers requests the server sends us. Without an answer the
+	// turn simply waits, which is how an unattended run stops being unattended.
+	onRequest func(id int, method string, params json.RawMessage)
+	nextID    int
+	pending   map[int]chan rpcResponse
+	notify    func(method string, params json.RawMessage)
+	activity  func(Activity)
+	stderrFn  func(string)
 	// wire records every line in both directions, verbatim. Only what we
 	// thought to parse is visible anywhere else; a request from the server, or
 	// a message of a kind not anticipated, leaves no trace at all.
@@ -208,6 +214,30 @@ func (c *Client) stderrSink() func(string) {
 	return c.stderrFn
 }
 
+// SetRequestHandler installs the answer to server requests.
+func (c *Client) SetRequestHandler(fn func(id int, method string, params json.RawMessage)) {
+	c.mu.Lock()
+	c.onRequest = fn
+	c.mu.Unlock()
+}
+
+// Respond answers a request from the server.
+func (c *Client) Respond(id int, result any) error {
+	body, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"result":  result,
+	})
+	if err != nil {
+		return err
+	}
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	c.recordWire(">>", string(body))
+	_, err = c.in.Write(append(body, '\n'))
+	return err
+}
+
 // SetWireSink installs a recorder for the raw protocol in both directions.
 func (c *Client) SetWireSink(fn func(dir, line string)) {
 	c.mu.Lock()
@@ -246,8 +276,18 @@ func (c *Client) readLoop() {
 		// A message carrying both a method and an id is a request from the
 		// server — it expects an answer. Nothing here answers one; recording
 		// it is the point of this pass.
+		// A message carrying both a method and an id is a request from the
+		// server, and it blocks the turn until answered.
 		if msg.Method != "" && msg.ID != 0 {
-			c.recordWire("??", "ЗАПРОС СЕРВЕРА без ответа: "+msg.Method)
+			c.mu.Lock()
+			fn := c.onRequest
+			c.mu.Unlock()
+			if fn != nil {
+				go fn(msg.ID, msg.Method, msg.Params)
+			} else {
+				c.recordWire("??", "ЗАПРОС СЕРВЕРА без ответа: "+msg.Method)
+			}
+			continue
 		}
 		if msg.Method != "" && msg.ID == 0 {
 			if c.notify != nil {

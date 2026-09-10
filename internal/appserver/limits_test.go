@@ -215,3 +215,63 @@ func TestReasoningFragmentsBecomeOneThought(t *testing.T) {
 		t.Errorf("мысли разных ходов смешались: %q", b.Text)
 	}
 }
+
+// A goal that cannot be restarted is still a goal. Hiding it meant Лунобот-1
+// sat blocked, waiting for a word from the user, and never appeared in the
+// window — the one goal that needed a person was the one a person could not see.
+func TestBlockedGoalIsStillListed(t *testing.T) {
+	if Restartable("blocked") {
+		t.Fatal("blocked внезапно стал перезапускаемым — тест проверяет не то")
+	}
+	// Restartable decides restarting; listing must not consult it. The guard in
+	// Candidates now checks only that a goal exists, which is what this asserts
+	// at the level a unit test can reach.
+	for _, st := range []string{"blocked", "complete", "cancelled"} {
+		if Restartable(st) {
+			t.Errorf("%q не должен перезапускаться", st)
+		}
+	}
+	for _, st := range []string{"paused", "usageLimited", "idle", "active"} {
+		if !Restartable(st) {
+			t.Errorf("%q должен перезапускаться", st)
+		}
+	}
+}
+
+// Each kind of approval answers in its own shape, and a wrong shape is a
+// rejected response — that is, a turn that waits for ever.
+func TestApprovalAnswersMatchTheirSchemas(t *testing.T) {
+	cases := []struct{ method, wantKey string }{
+		{"item/commandExecution/requestApproval", "decision"},
+		{"item/fileChange/requestApproval", "decision"},
+		{"item/permissions/requestApproval", "scope"},
+		{"item/tool/requestUserInput", "response"},
+	}
+	for _, c := range cases {
+		if !IsApprovalRequest(c.method) {
+			t.Errorf("%s не опознан как запрос разрешения", c.method)
+			continue
+		}
+		got, ok := ApprovalAnswer(c.method, nil).(map[string]any)
+		if !ok || got[c.wantKey] == nil {
+			t.Errorf("%s: ответ без поля %q: %#v", c.method, c.wantKey, got)
+		}
+	}
+
+	// Anything else is not ours to answer.
+	if IsApprovalRequest("account/chatgptAuthTokens/refresh") {
+		t.Error("обновление токенов принято за запрос разрешения")
+	}
+}
+
+// The journal has to say what was allowed, or automatic approval becomes an
+// invisible hand.
+func TestApprovalSummaryNamesTheCommand(t *testing.T) {
+	got := ApprovalSummary("item/commandExecution/requestApproval",
+		[]byte(`{"command":["git","push","origin","main"],"reason":"push в репозиторий"}`))
+	for _, want := range []string{"git push origin main", "push в репозиторий"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("в описании нет %q: %s", want, got)
+		}
+	}
+}

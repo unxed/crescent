@@ -96,6 +96,9 @@ type Journal struct {
 	// and it is for investigation, not for reading day to day.
 	wire  *rotatingFile
 	trace *rotatingFile
+	// showServer decides whether the server's own logging reaches the journal
+	// a person reads.
+	showServer bool
 }
 
 // Dir is where journals live: a subdirectory of the user cache.
@@ -181,9 +184,19 @@ func (j *Journal) Wire(dir, line string) {
 	fmt.Fprintf(j.wire, "%s %s %s\n", time.Now().Format("15:04:05.000"), dir, line)
 }
 
-// Server records one line of app-server's own logging. It goes to its own file,
-// and only warnings and errors reach the human journal: everything else is
-// INFO-level tracing that no person is reading.
+// ShowServerLines routes app-server's own logging into the human journal as
+// well as its own file. Off by default: a live run put hundreds of lines a
+// minute on screen, and the journal a person reads is for what a person can act
+// on.
+func (j *Journal) ShowServerLines(on bool) {
+	j.mu.Lock()
+	j.showServer = on
+	j.mu.Unlock()
+}
+
+// Server records one line of app-server's own logging. It always goes to
+// app-server.log; whether it also reaches the human journal is a choice made by
+// flag.
 func (j *Journal) Server(line string) {
 	line = stripANSI(line)
 	if line == "" {
@@ -195,9 +208,15 @@ func (j *Journal) Server(line string) {
 	}
 	j.mu.Unlock()
 
-	// A line that names a thread belongs in that goal's own log. Without this
-	// the diagnosis sat in the combined feed while the goal's log said nothing
-	// was happening — the answer was on disk and the screen showed silence.
+	j.mu.Lock()
+	show := j.showServer
+	j.mu.Unlock()
+	if !show {
+		return // recorded in app-server.log, and that is where it belongs
+	}
+
+	// With the flag on, a line naming a thread joins that goal's log, where a
+	// diagnosis about that goal is worth having.
 	if id := appserver.ThreadIDIn(line); id != "" {
 		j.write(id, "app-server", line)
 		return

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"runtime"
@@ -25,20 +26,27 @@ import (
 // in the morning: one glance at the traffic light says whether anything is
 // happening, and the goals are checkboxes with nothing hidden behind a flag.
 type desktop struct {
-	app  *gw.App
-	sup  *supervisor.Supervisor
-	pins *pins.Pins
-	jour *journal.Journal
+	app    *gw.App
+	client *appserver.Client
+	sup    *supervisor.Supervisor
+	pins   *pins.Pins
+	jour   *journal.Journal
 
-	win      *gw.Window
-	lamp     *gw.Label
-	detail   *gw.Label
-	counts   *gw.Label
-	limits   *gw.Label
-	limits2  *gw.Label
-	pauseBtn *gw.Button
-	viewBtn  *gw.Button
-	log      *gw.TextView
+	win     *gw.Window
+	lamp    *gw.Label
+	detail  *gw.Label
+	counts  *gw.Label
+	limits  *gw.Label
+	limits2 *gw.Label
+	// autoOK is the standing answer to Codex asking permission. On by default:
+	// a person starts crescent to walk away, and a prompt nobody answers stops
+	// the work as surely as an error.
+	autoOK     bool
+	pending    []pendingApproval
+	pauseBtn   *gw.Button
+	approveBtn *gw.Button
+	viewBtn    *gw.Button
+	log        *gw.TextView
 
 	// which journal the text view is showing: "" is the combined feed, any
 	// other value is one goal's own log.
@@ -53,7 +61,7 @@ type desktop struct {
 	cancel context.CancelFunc
 }
 
-func runDesktop(codexPath, prompt string, verbose, wire, trace bool, poll time.Duration) error {
+func runDesktop(codexPath, prompt string, verbose, wire, trace, serverLog bool, poll time.Duration) error {
 	// One crescent at a time. Two of them take turns on the same threads and
 	// each sees the other's turn as "already has an active writer".
 	lock, err := holdSingleInstance()
@@ -75,6 +83,8 @@ func runDesktop(codexPath, prompt string, verbose, wire, trace bool, poll time.D
 	// to reach both the journal and the supervisor, which decides whether the
 	// goal is worth restarting at all.
 
+	jour.ShowServerLines(serverLog)
+
 	thePins := pins.Load()
 	app, err := gw.NewApp()
 	if err != nil {
@@ -83,7 +93,7 @@ func runDesktop(codexPath, prompt string, verbose, wire, trace bool, poll time.D
 		return fmt.Errorf("графическая подсистема недоступна: %w", err)
 	}
 
-	d := &desktop{app: app, pins: thePins, jour: jour}
+	d := &desktop{app: app, pins: thePins, jour: jour, client: client, autoOK: true}
 	d.sup = supervisor.New(supervisor.Options{
 		Client: client, Pins: thePins, Journal: jour, Prompt: prompt, Poll: poll,
 		OnChange: func(s supervisor.Status) {
@@ -101,6 +111,7 @@ func runDesktop(codexPath, prompt string, verbose, wire, trace bool, poll time.D
 			fmt.Println("не удалось открыть запись протокола:", err)
 		}
 	}
+	client.SetRequestHandler(d.onServerRequest)
 	client.SetStderrSink(func(line string) {
 		jour.Server(line)
 		d.sup.NoteServerLine(line)
@@ -248,6 +259,28 @@ func (d *desktop) build() error {
 	d.viewBtn.Clicked.On(d.app.Scope(), func(gw.ClickInfo) { d.cycleView() })
 	d.log, _ = win.AddTextView(150)
 
+	// On by default, and stated plainly: this is what makes an unattended run
+	// unattended. Codex asks even where its own settings already allow the
+	// action, so the prompts it raises here are its caution, not new authority.
+	autoBox, err := win.AddCheckBox("Подтверждать запросы Codex автоматически", true)
+	if err != nil {
+		return err
+	}
+	autoBox.Toggled.On(d.app.Scope(), func(on bool) {
+		d.mu.Lock()
+		d.autoOK = on
+		d.mu.Unlock()
+		if on {
+			d.jour.Note("", "подтверждаю запросы Codex автоматически")
+			d.approveAll() // anything already waiting is answered now
+		} else {
+			d.jour.Note("", "запросы Codex буду показывать вам")
+		}
+	})
+
+	d.approveBtn, _ = win.AddButton("Подтвердить запросы")
+	d.approveBtn.Clicked.On(d.app.Scope(), func(gw.ClickInfo) { d.approveAll() })
+
 	d.pauseBtn, _ = win.AddButton("Пауза")
 	d.pauseBtn.Clicked.On(d.app.Scope(), func(gw.ClickInfo) {
 		paused := !d.sup.Paused()
@@ -320,6 +353,58 @@ type goalRow struct {
 	box       *gw.CheckBox
 }
 
+// pendingApproval is a request waiting for a person, kept only when automatic
+// approval is switched off.
+type pendingApproval struct {
+	id      int
+	method  string
+	summary string
+	params  json.RawMessage
+}
+
+// onServerRequest answers Codex when it asks permission.
+func (d *desktop) onServerRequest(id int, method string, params json.RawMessage) {
+	if !appserver.IsApprovalRequest(method) {
+		return // some other request; nothing sensible to answer
+	}
+	summary := appserver.ApprovalSummary(method, params)
+
+	d.mu.Lock()
+	auto := d.autoOK
+	if !auto {
+		d.pending = append(d.pending, pendingApproval{id, method, summary, params})
+	}
+	d.mu.Unlock()
+
+	if !auto {
+		d.jour.Note("", "Codex просит разрешения: "+summary+" — нажмите «Подтвердить»")
+		d.app.QueueUpdate(func() { d.render(d.sup.Status()) })
+		return
+	}
+	if err := d.client.Respond(id, appserver.ApprovalAnswer(method, params)); err != nil {
+		d.jour.Note("", "не удалось ответить на запрос разрешения: "+err.Error())
+		return
+	}
+	d.jour.Note("", "разрешено автоматически: "+summary)
+}
+
+// approveAll answers everything that is waiting.
+func (d *desktop) approveAll() {
+	d.mu.Lock()
+	waiting := d.pending
+	d.pending = nil
+	d.mu.Unlock()
+
+	for _, p := range waiting {
+		if err := d.client.Respond(p.id, appserver.ApprovalAnswer(p.method, p.params)); err != nil {
+			d.jour.Note("", "не удалось подтвердить: "+err.Error())
+			continue
+		}
+		d.jour.Note("", "разрешено вами: "+p.summary)
+	}
+	d.render(d.sup.Status())
+}
+
 func (d *desktop) buildTray() {
 	show := gw.NewMenuItem("Показать окно")
 	openLog := gw.NewMenuItem("Открыть папку журналов")
@@ -376,6 +461,19 @@ func (d *desktop) render(s supervisor.Status) {
 			d.limits2.Text.Set("         " + strings.Join(s.Limits[half:], "   |   "))
 		} else {
 			d.limits2.Text.Set("")
+		}
+	}
+	if d.approveBtn != nil {
+		d.mu.Lock()
+		n := len(d.pending)
+		d.mu.Unlock()
+		switch {
+		case n == 0:
+			d.approveBtn.Text.Set("Подтверждать нечего")
+		case n == 1:
+			d.approveBtn.Text.Set("Подтвердить 1 запрос Codex")
+		default:
+			d.approveBtn.Text.Set(fmt.Sprintf("Подтвердить запросы Codex: %d", n))
 		}
 	}
 	if d.pauseBtn != nil {

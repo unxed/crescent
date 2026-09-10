@@ -120,14 +120,13 @@ func TestServerLinesStrippedAndSeparated(t *testing.T) {
 		t.Error("строка сервера не попала в свой файл")
 	}
 
-	// The human journal gets the error but not the INFO noise: on a live run
-	// that ratio was 15768 machine lines to 96 of ours.
+	// By default nothing from the server reaches the human journal at all: the
+	// ratio on a live run was 15768 machine lines to 96 of ours, and even the
+	// errors among them arrive faster than they can be read.
 	all, _ := os.ReadFile(filepath.Join(dir, "all.log"))
-	if strings.Contains(string(all), "app_server.request") {
-		t.Error("INFO-шум сервера попал в человеческий журнал")
-	}
-	if !strings.Contains(string(all), "всё плохо") {
-		t.Error("ошибка сервера не доведена до человека")
+	if strings.Contains(string(all), "app_server.request") ||
+		strings.Contains(string(all), "всё плохо") {
+		t.Errorf("сообщения сервера попали в человеческий журнал без запроса:\n%s", all)
 	}
 }
 
@@ -266,6 +265,7 @@ func TestServerLineGoesToTheGoalItNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	j.ShowServerLines(true)
 	j.Label("01a08207-cf5e-7631-90c3-3f8ac9c49a75", "Лунобот-1")
 	j.Server("WARN codex_thread_store: failed to project durable rollout for " +
 		"01a08207-cf5e-7631-90c3-3f8ac9c49a75: expected ordinal 4330, got 4329")
@@ -284,5 +284,41 @@ func TestServerLineGoesToTheGoalItNames(t *testing.T) {
 	all, _ := os.ReadFile(filepath.Join(dir, "all.log"))
 	if !strings.Contains(string(all), "no thread at all") {
 		t.Error("строка без треда потеряна")
+	}
+}
+
+// app-server produces hundreds of lines a minute. Left in the journal a person
+// reads, they pushed everything the person can act on off the screen within
+// seconds — a live window showed nothing but codex_thread_store warnings.
+func TestServerChatterStaysOutOfTheHumanJournal(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	j, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.Label("01a08207-cf5e-7631-90c3-3f8ac9c49a75", "Лунобот-1")
+	j.Note("", "наблюдение запущено")
+	j.Server("2026-09-10T03:25:39Z WARN codex_thread_store::local::live_writer: " +
+		"failed to project durable rollout for 01a08207-cf5e-7631-90c3-3f8ac9c49a75")
+	j.Server("2026-09-10T03:25:39Z INFO session_loop: op.dispatch.turn_input")
+	j.Close()
+
+	dir, _ := Dir()
+	all, _ := os.ReadFile(filepath.Join(dir, "all.log"))
+	if strings.Contains(string(all), "codex_thread_store") {
+		t.Errorf("шум сервера попал в человеческий журнал:\n%s", all)
+	}
+	if !strings.Contains(string(all), "наблюдение запущено") {
+		t.Error("собственные записи crescent пропали")
+	}
+
+	// Nothing is lost: it is all in the server's own file.
+	srv, err := os.ReadFile(filepath.Join(dir, "app-server.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(srv), "codex_thread_store") ||
+		!strings.Contains(string(srv), "op.dispatch.turn_input") {
+		t.Error("строки сервера потеряны вместо того, чтобы уйти в свой файл")
 	}
 }

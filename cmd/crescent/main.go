@@ -31,6 +31,7 @@ func main() {
 	raw := flag.Bool("raw", false, "печатать сырые ответы сервера")
 	grace := flag.Duration("grace", 0, "сколько цель может молчать, прежде чем считаться остановившейся (по умолчанию 5m; для расследования, например 15s)")
 	poll := flag.Duration("poll", 0, "как часто проверять цели (по умолчанию 30s)")
+	serverLog := flag.Bool("server-log", false, "показывать в журнале и собственные сообщения app-server (их сотни в минуту)")
 	trace := flag.Bool("trace", false, "записывать каждое решение супервизора в decisions.log")
 	wire := flag.Bool("protocol", false, "записывать весь протокол дословно в protocol.log (для расследования)")
 	restart := flag.Bool("restart", false, "перезапустить остановленные цели, если лимит позволяет")
@@ -56,7 +57,7 @@ func main() {
 				return
 			}
 		}
-		if err := runDesktop(*codexPath, *prompt, *verbose, *wire, *trace, *poll); err != nil {
+		if err := runDesktop(*codexPath, *prompt, *verbose, *wire, *trace, *serverLog, *poll); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}

@@ -48,7 +48,12 @@ func (c *Client) Candidates(ctx context.Context) ([]Candidate, error) {
 			continue
 		}
 		goal, err := c.Goal(ctx, t.ID)
-		if err != nil || !goal.Set() || !Restartable(goal.Status) {
+		// A goal that cannot be restarted is still a goal, and hiding it was
+		// worse than useless: Лунобот-1 sat blocked, waiting for a word from
+		// the user, and did not appear in the window at all. Whether to restart
+		// is decided later, by status; whether to show is decided here, and the
+		// answer is always yes.
+		if err != nil || !goal.Set() {
 			continue
 		}
 		out = append(out, Candidate{Thread: t, Goal: goal})
