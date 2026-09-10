@@ -71,13 +71,48 @@ func AsksForConfirmation(message string) bool {
 // же места…" — while the explanation of the block sits a few messages back. The
 // request has to be looked for, not assumed to be last.
 func (c *Client) RecentAgentMessages(ctx context.Context, threadID string, n int) ([]string, error) {
-	raw, err := c.Call(ctx, "thread/items/list", map[string]any{
-		"threadId":      threadID,
-		"limit":         n,
-		"sortDirection": "desc",
-	})
+	// Pages, because one is not enough. Between the block and now the goal was
+	// restarted several times, and each restart adds a reply, a reasoning item
+	// and a handful of commands — the request that matters ends up hundreds of
+	// items back, not thirty.
+	var (
+		out    []string
+		kinds  = map[string]int{}
+		cursor string
+		items  int
+	)
+	for page := 0; page < 10 && len(out) < n; page++ {
+		params := map[string]any{
+			"threadId":      threadID,
+			"limit":         100,
+			"sortDirection": "desc",
+		}
+		if cursor != "" {
+			params["cursor"] = cursor
+		}
+		got, next, seen, err := c.itemsPage(ctx, params, kinds)
+		if err != nil {
+			return nil, err
+		}
+		items += seen
+		out = append(out, got...)
+		if next == "" || seen == 0 {
+			break
+		}
+		cursor = next
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("среди %d элементов нет сообщений модели (виды: %v)",
+			items, kinds)
+	}
+	return out, nil
+}
+
+// itemsPage fetches one page of items and returns the model messages in it.
+func (c *Client) itemsPage(ctx context.Context, params map[string]any, kinds map[string]int) (msgs []string, next string, seen int, err error) {
+	raw, err := c.Call(ctx, "thread/items/list", params)
 	if err != nil {
-		return nil, err
+		return nil, "", 0, err
 	}
 	var resp struct {
 		Data []struct {
@@ -88,13 +123,11 @@ func (c *Client) RecentAgentMessages(ctx context.Context, threadID string, n int
 				Text string `json:"text"`
 			} `json:"content"`
 		} `json:"data"`
+		NextCursor string `json:"nextCursor"`
 	}
 	if err := json.Unmarshal(raw, &resp); err != nil {
-		return nil, fmt.Errorf("разбор ответа thread/items/list: %w", err)
+		return nil, "", 0, fmt.Errorf("разбор ответа thread/items/list: %w", err)
 	}
-
-	var out []string
-	kinds := map[string]int{}
 	for _, it := range resp.Data {
 		typ, text := it.Type, it.Text
 		if it.Item != nil {
@@ -107,14 +140,10 @@ func (c *Client) RecentAgentMessages(ctx context.Context, threadID string, n int
 		}
 		kinds[typ]++
 		if typ == "agentMessage" && strings.TrimSpace(text) != "" {
-			out = append(out, text)
+			msgs = append(msgs, text)
 		}
 	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("среди %d элементов нет сообщений модели (виды: %v)",
-			len(resp.Data), kinds)
-	}
-	return out, nil
+	return msgs, resp.NextCursor, len(resp.Data), nil
 }
 
 // LastAgentMessage reads what a goal said last, straight from the thread.

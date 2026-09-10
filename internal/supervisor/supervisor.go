@@ -364,7 +364,7 @@ func (s *Supervisor) FetchLastMessage(ctx context.Context, id string) {
 	if have {
 		return
 	}
-	msgs, err := s.client.RecentAgentMessages(ctx, id, 30)
+	msgs, err := s.client.RecentAgentMessages(ctx, id, 200)
 	if err != nil {
 		// Said once per goal: swallowing this is what hid a whole round of
 		// investigation, because a request that failed looked exactly like a
@@ -395,8 +395,9 @@ func (s *Supervisor) FetchLastMessage(ctx context.Context, id string) {
 	// phrase — as unanswerable as the one before it.
 	switch {
 	case !appserver.AsksForConfirmation(msg):
-		s.note2(id, "сообщение цели прочитано, но в нём нет просьбы подтвердить; "+
-			"последние слова: "+tailOf(msg, 300))
+		s.note2(id, fmt.Sprintf(
+			"просмотрено %d сообщений цели, просьбы подтвердить ни в одном нет; "+
+				"последние слова: %s", len(msgs), tailOf(msg, 250)))
 	case appserver.UnblockPhrase(msg) == "":
 		s.note2(id, "цель ждёт ответа, но не назвала фразу в кавычках; "+
 			"последние слова: "+tailOf(msg, 300))
