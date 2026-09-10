@@ -38,6 +38,10 @@ type Client struct {
 	notify   func(method string, params json.RawMessage)
 	activity func(Activity)
 	stderrFn func(string)
+	// wire records every line in both directions, verbatim. Only what we
+	// thought to parse is visible anywhere else; a request from the server, or
+	// a message of a kind not anticipated, leaves no trace at all.
+	wire     func(dir, line string)
 	closed   bool
 	closeErr error
 }
@@ -204,6 +208,22 @@ func (c *Client) stderrSink() func(string) {
 	return c.stderrFn
 }
 
+// SetWireSink installs a recorder for the raw protocol in both directions.
+func (c *Client) SetWireSink(fn func(dir, line string)) {
+	c.mu.Lock()
+	c.wire = fn
+	c.mu.Unlock()
+}
+
+func (c *Client) recordWire(dir, line string) {
+	c.mu.Lock()
+	fn := c.wire
+	c.mu.Unlock()
+	if fn != nil {
+		fn(dir, line)
+	}
+}
+
 // SetStderrSink installs a callback for the server's diagnostic output.
 func (c *Client) SetStderrSink(fn func(string)) {
 	c.mu.Lock()
@@ -215,9 +235,19 @@ func (c *Client) SetStderrSink(fn func(string)) {
 // the callback.
 func (c *Client) readLoop() {
 	for c.out.Scan() {
+		raw := c.out.Text()
+		c.recordWire("<<", raw)
+
 		var msg rpcResponse
-		if json.Unmarshal(c.out.Bytes(), &msg) != nil {
+		if json.Unmarshal([]byte(raw), &msg) != nil {
+			c.recordWire("!!", "не разобрано как JSON-RPC")
 			continue
+		}
+		// A message carrying both a method and an id is a request from the
+		// server — it expects an answer. Nothing here answers one; recording
+		// it is the point of this pass.
+		if msg.Method != "" && msg.ID != 0 {
+			c.recordWire("??", "ЗАПРОС СЕРВЕРА без ответа: "+msg.Method)
 		}
 		if msg.Method != "" && msg.ID == 0 {
 			if c.notify != nil {
@@ -288,6 +318,7 @@ func (c *Client) Call(ctx context.Context, method string, params any) (json.RawM
 	if err != nil {
 		return nil, err
 	}
+	c.recordWire(">>", string(body))
 	if _, err := c.in.Write(append(body, '\n')); err != nil {
 		return nil, fmt.Errorf("%s: %w", method, err)
 	}

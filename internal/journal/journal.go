@@ -92,6 +92,9 @@ type Journal struct {
 	// On a live run it produced 15768 lines against 96 of ours: mixed together,
 	// the journal a person reads was 99.4% machine noise.
 	server *rotatingFile
+	// wire is the verbatim protocol, opened only when asked for: it is large
+	// and it is for investigation, not for reading day to day.
+	wire *rotatingFile
 }
 
 // Dir is where journals live: a subdirectory of the user cache.
@@ -130,6 +133,29 @@ func (j *Journal) Label(threadID, label string) {
 	j.mu.Lock()
 	j.labels[threadID] = label
 	j.mu.Unlock()
+}
+
+// OpenWire starts recording the raw protocol into protocol.log.
+func (j *Journal) OpenWire() (string, error) {
+	path := filepath.Join(j.dir, "protocol.log")
+	f, err := newRotatingFile(path)
+	if err != nil {
+		return "", err
+	}
+	j.mu.Lock()
+	j.wire = f
+	j.mu.Unlock()
+	return path, nil
+}
+
+// Wire records one line of the protocol, in the direction given.
+func (j *Journal) Wire(dir, line string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.wire == nil {
+		return
+	}
+	fmt.Fprintf(j.wire, "%s %s %s\n", time.Now().Format("15:04:05.000"), dir, line)
 }
 
 // Server records one line of app-server's own logging. It goes to its own file,
@@ -316,6 +342,9 @@ func (j *Journal) Close() {
 	}
 	if j.combined != nil {
 		_ = j.combined.Close()
+	}
+	if j.wire != nil {
+		_ = j.wire.Close()
 	}
 }
 

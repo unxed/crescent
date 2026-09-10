@@ -28,6 +28,7 @@ func main() {
 	codexPath := flag.String("codex", "", "путь к codex (иначе ищется автоматически)")
 	verbose := flag.Bool("v", false, "показывать диагностику app-server")
 	raw := flag.Bool("raw", false, "печатать сырые ответы сервера")
+	wire := flag.Bool("protocol", false, "записывать весь протокол дословно в protocol.log (для расследования)")
 	restart := flag.Bool("restart", false, "перезапустить остановленные цели, если лимит позволяет")
 	gui := flag.Bool("gui", false, "окно (режим по умолчанию)")
 	noGui := flag.Bool("no-gui", false, "не открывать окно, показать краткую справку")
@@ -48,7 +49,7 @@ func main() {
 				return
 			}
 		}
-		if err := runDesktop(*codexPath, *prompt, *verbose); err != nil {
+		if err := runDesktop(*codexPath, *prompt, *verbose, *wire); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}

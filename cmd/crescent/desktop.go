@@ -53,7 +53,7 @@ type desktop struct {
 	cancel context.CancelFunc
 }
 
-func runDesktop(codexPath, prompt string, verbose bool) error {
+func runDesktop(codexPath, prompt string, verbose, wire bool) error {
 	// One crescent at a time. Two of them take turns on the same threads and
 	// each sees the other's turn as "already has an active writer".
 	lock, err := holdSingleInstance()
@@ -93,6 +93,14 @@ func runDesktop(codexPath, prompt string, verbose bool) error {
 
 	// Installed once the supervisor exists: the turn id appears only in this
 	// stream, and turn/interrupt cannot be issued without it.
+	if wire {
+		if path, err := jour.OpenWire(); err == nil {
+			fmt.Println("протокол пишется дословно:", path)
+			client.SetWireSink(jour.Wire)
+		} else {
+			fmt.Println("не удалось открыть запись протокола:", err)
+		}
+	}
 	client.SetStderrSink(func(line string) {
 		jour.Server(line)
 		d.sup.NoteServerLine(line)
