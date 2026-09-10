@@ -204,18 +204,23 @@ func TestLiveThreadStatusIsShownOverTheGoalRecord(t *testing.T) {
 	s := &Supervisor{live: map[string]liveStatus{}}
 
 	// Nothing from the stream yet: the goal record is all there is.
-	if got := s.shownStatus("g", "blocked"); got != "blocked" {
+	if got := s.shownStatus("g", "blocked", false); got != "blocked" {
 		t.Errorf("без свежих данных показан %q", got)
 	}
 
 	s.NoteThreadStatus("g", "active")
-	if got := s.shownStatus("g", "blocked"); got != "active" {
+	if got := s.shownStatus("g", "blocked", false); got != "active" {
 		t.Errorf("показан устаревший статус %q вместо свежего active", got)
+	}
+
+	// Not every goal emits a status event: activity alone proves it is active.
+	if got := s.shownStatus("g2", "blocked", true); got != "active" {
+		t.Errorf("цель с идущими событиями показана как %q", got)
 	}
 
 	// A stale stream word gives way back to the record.
 	s.live["g"] = liveStatus{Status: "active", At: time.Now().Add(-2 * ProgressMaxAge)}
-	if got := s.shownStatus("g", "blocked"); got != "blocked" {
+	if got := s.shownStatus("g", "blocked", false); got != "blocked" {
 		t.Errorf("устаревшее сообщение потока всё ещё в ходу: %q", got)
 	}
 }

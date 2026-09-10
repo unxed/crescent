@@ -493,7 +493,10 @@ func (d *desktop) render(s supervisor.Status) {
 	}
 	d.lamp.Text.Set(lamp.Symbol() + "   " + lamp.Word() + " — " + why)
 	d.detail.Text.Set(s.Line())
-	counts := fmt.Sprintf("Отмечено целей: %d   •   перезапусков: %d   •   потрачено токенов: %d",
+	// The scope is spelled out. Next to per-goal totals in the millions, a bare
+	// «потрачено токенов: 0» reads as broken, when it means the run is seconds
+	// old and no growth has been observed yet.
+	counts := fmt.Sprintf("Отмечено целей: %d   •   перезапусков: %d   •   потрачено за этот запуск: %d",
 		d.pins.Count(), s.Restarts, s.SpentSince)
 	if !s.NextPass.IsZero() {
 		if left := time.Until(s.NextPass); left > 0 {

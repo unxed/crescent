@@ -373,12 +373,20 @@ func (s *Supervisor) NoteThreadStatus(threadID, status string) {
 
 // shownStatus is what a goal's status line should say: the stream's word when
 // it is recent, the goal record otherwise.
-func (s *Supervisor) shownStatus(id, recorded string) string {
+func (s *Supervisor) shownStatus(id, recorded string, working bool) string {
 	s.mu.Lock()
 	l := s.live[id]
 	s.mu.Unlock()
 	if l.Status != "" && time.Since(l.At) < ProgressMaxAge {
 		return l.Status
+	}
+	// Not every goal emits thread/status/changed: one may be thinking and
+	// running commands while sending no status event at all, and then the
+	// recorded word — blocked — was shown beside a green lamp and a command
+	// finishing a second ago. Anything arriving from the goal is proof enough
+	// that it is active.
+	if working {
+		return "active"
 	}
 	return recorded
 }
@@ -880,10 +888,12 @@ func (s *Supervisor) waitReason(id string, goal appserver.Goal) (string, time.Ti
 	broken := s.broken[id]
 	s.mu.Unlock()
 
-	// The same live word the row shows: saying "ждёт вас: статус blocked" next
-	// to a green lamp and an active status was the row contradicting itself in
-	// a third place.
-	shown := s.shownStatus(id, goal.Status)
+	// The same word the row shows, judged the same way: saying "ждёт вас:
+	// статус blocked" beside a green lamp and a command that finished a second
+	// ago was the row contradicting itself in a third place.
+	working := (!last.IsZero() && time.Since(last) < ProgressMaxAge) ||
+		(hasSpend && !mark.Moved.IsZero() && time.Since(mark.Moved) < ProgressMaxAge)
+	shown := s.shownStatus(id, goal.Status, working)
 
 	switch {
 	case broken != "":
@@ -968,7 +978,7 @@ func (s *Supervisor) proveMovement(ctx context.Context) {
 		s.statuses[id] = goal.Status
 		s.mu.Unlock()
 		sp := GoalSpend{Tokens: goal.TokensUsed, Seconds: goal.TimeUsedSeconds,
-			Status: s.shownStatus(id, goal.Status), LastSeen: lastSeen,
+			Status: s.shownStatus(id, goal.Status, grew || streaming), LastSeen: lastSeen,
 			Spending: grew || streaming}
 		if !appserver.Restartable(goal.Status) {
 			// The words it is waiting for live in its last message, and a goal
