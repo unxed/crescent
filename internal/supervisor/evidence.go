@@ -8,15 +8,28 @@ import "time"
 const (
 	// LivenessMaxAge covers the heartbeat, which runs every few seconds.
 	LivenessMaxAge = 10 * time.Second
-	// ProgressMaxAge is how long a goal may go without spending a token before
-	// crescent stops calling it working. A model that is thinking still bills
-	// tokens as it goes, so silence this long means it is not thinking.
-	ProgressMaxAge = 5 * time.Minute
+	// DefaultProgressMaxAge is how long a goal may go without spending a token
+	// before crescent stops calling it working. A model that is thinking still
+	// bills tokens as it goes, so silence this long means it is not thinking.
+	DefaultProgressMaxAge = 5 * time.Minute
 	// SurveyMaxAge covers what the main pass establishes: the account limit and
 	// whether goals are moving. The pass runs on the poll interval, so this is
 	// three times that, leaving room for one missed round.
 	SurveyMaxAge = 95 * time.Second
 )
+
+// ProgressMaxAge is the live value, adjustable for investigation: waiting five
+// minutes to see one decision makes a debugging round unbearably slow, and the
+// length of the grace period is itself a thing under examination.
+var ProgressMaxAge = DefaultProgressMaxAge
+
+// SetProgressMaxAge changes how long a goal may stay silent before it stops
+// counting as working. Intended for investigation, not for normal running.
+func SetProgressMaxAge(d time.Duration) {
+	if d > 0 {
+		ProgressMaxAge = d
+	}
+}
 
 // Fact is one thing crescent has established, and when.
 //

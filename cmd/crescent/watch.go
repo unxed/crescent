@@ -20,7 +20,7 @@ import (
 // pins the named goals (or uses whatever is already pinned), then hands over to
 // the supervisor and prints its status changes. Ctrl-C stops watching; the
 // goals themselves keep whatever state they were in.
-func runWatch(codexPath string, selectors []string, prompt string, verbose bool, poll time.Duration) error {
+func runWatch(codexPath string, selectors []string, prompt string, verbose bool, poll time.Duration, trace, wire bool) error {
 	lock, err := holdSingleInstance()
 	if err != nil {
 		return err
@@ -84,6 +84,21 @@ func runWatch(codexPath string, selectors []string, prompt string, verbose bool,
 		jour.Server(line)
 		sup.NoteServerLine(line)
 	})
+
+	// The same recorders as the window mode: an investigation should not depend
+	// on which face of the program happens to be running.
+	if trace {
+		if path, err := jour.OpenTrace(); err == nil {
+			fmt.Println("решения пишутся:", path)
+			sup.SetTrace(jour.Trace)
+		}
+	}
+	if wire {
+		if path, err := jour.OpenWire(); err == nil {
+			fmt.Println("протокол пишется:", path)
+			client.SetWireSink(jour.Wire)
+		}
+	}
 
 	sigctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()

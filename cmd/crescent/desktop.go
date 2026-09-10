@@ -53,7 +53,7 @@ type desktop struct {
 	cancel context.CancelFunc
 }
 
-func runDesktop(codexPath, prompt string, verbose, wire, trace bool) error {
+func runDesktop(codexPath, prompt string, verbose, wire, trace bool, poll time.Duration) error {
 	// One crescent at a time. Two of them take turns on the same threads and
 	// each sees the other's turn as "already has an active writer".
 	lock, err := holdSingleInstance()
@@ -85,7 +85,7 @@ func runDesktop(codexPath, prompt string, verbose, wire, trace bool) error {
 
 	d := &desktop{app: app, pins: thePins, jour: jour}
 	d.sup = supervisor.New(supervisor.Options{
-		Client: client, Pins: thePins, Journal: jour, Prompt: prompt,
+		Client: client, Pins: thePins, Journal: jour, Prompt: prompt, Poll: poll,
 		OnChange: func(s supervisor.Status) {
 			app.QueueUpdate(func() { d.render(s) })
 		},

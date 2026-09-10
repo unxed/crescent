@@ -21,6 +21,7 @@ import (
 	"github.com/unxed/crescent/internal/codexcli"
 	"github.com/unxed/crescent/internal/journal"
 	"github.com/unxed/crescent/internal/single"
+	"github.com/unxed/crescent/internal/supervisor"
 )
 
 func main() {
@@ -28,6 +29,8 @@ func main() {
 	codexPath := flag.String("codex", "", "путь к codex (иначе ищется автоматически)")
 	verbose := flag.Bool("v", false, "показывать диагностику app-server")
 	raw := flag.Bool("raw", false, "печатать сырые ответы сервера")
+	grace := flag.Duration("grace", 0, "сколько цель может молчать, прежде чем считаться остановившейся (по умолчанию 5m; для расследования, например 15s)")
+	poll := flag.Duration("poll", 0, "как часто проверять цели (по умолчанию 30s)")
 	trace := flag.Bool("trace", false, "записывать каждое решение супервизора в decisions.log")
 	wire := flag.Bool("protocol", false, "записывать весь протокол дословно в protocol.log (для расследования)")
 	restart := flag.Bool("restart", false, "перезапустить остановленные цели, если лимит позволяет")
@@ -38,6 +41,9 @@ func main() {
 	dry := flag.Bool("dry-run", false, "с -restart: показать, что было бы сделано, и не делать")
 	prompt := flag.String("prompt", "Продолжай работу над текущей целью.", "чем будить цель")
 	flag.Parse()
+
+	// Applied before anything starts, so every mode sees the same value.
+	supervisor.SetProgressMaxAge(*grace)
 
 	// The window is what this is for, so it is what you get by default: a bare
 	// `crescent` opens it. The other modes stay behind their flags.
@@ -50,7 +56,7 @@ func main() {
 				return
 			}
 		}
-		if err := runDesktop(*codexPath, *prompt, *verbose, *wire, *trace); err != nil {
+		if err := runDesktop(*codexPath, *prompt, *verbose, *wire, *trace, *poll); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -59,7 +65,7 @@ func main() {
 
 	if *watch != "" || hasFlag("watch") {
 		sels := splitList(*watch)
-		if err := runWatch(*codexPath, sels, *prompt, *verbose, 30*time.Second); err != nil {
+		if err := runWatch(*codexPath, sels, *prompt, *verbose, watchPoll(*poll), *trace, *wire); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -229,6 +235,14 @@ func detachedOutputPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, "crescent.out"), nil
+}
+
+// watchPoll keeps the previous default when no interval was asked for.
+func watchPoll(d time.Duration) time.Duration {
+	if d > 0 {
+		return d
+	}
+	return 30 * time.Second
 }
 
 func hasFlag(name string) bool {
