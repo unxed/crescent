@@ -159,3 +159,25 @@ func TestHistoryDesyncIsRecognised(t *testing.T) {
 		}
 	}
 }
+
+// A log line carries an installation_id in the same UUID shape as a thread id.
+// Taking the first match created a journal file named after the installation —
+// a goal log for a goal that does not exist.
+func TestInstallationIDIsNotAThread(t *testing.T) {
+	line := "INFO remote_control::websocket: loop exiting " +
+		"remote_control_url=https://chatgpt.com/backend-api/ " +
+		"installation_id=7e8fd38a-70f9-4b99-be27-4aeecc9c4d2e server_name=rcnb"
+	if got := ThreadIDIn(line); got != "" {
+		t.Errorf("установочный идентификатор принят за тред: %q", got)
+	}
+
+	real := "WARN session_loop{thread_id=01a08207-cf5e-7631-90c3-3f8ac9c49a75}: что-то"
+	if got := ThreadIDIn(real); got != "01a08207-cf5e-7631-90c3-3f8ac9c49a75" {
+		t.Errorf("настоящий тред не найден: %q", got)
+	}
+
+	proj := "thread history projection for 01a08208-2013-7922-95c2-34c9cd13f424 expected ordinal 5, got 4"
+	if got := ThreadIDIn(proj); got != "01a08208-2013-7922-95c2-34c9cd13f424" {
+		t.Errorf("тред из строки о проекции не найден: %q", got)
+	}
+}

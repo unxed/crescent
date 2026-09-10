@@ -125,7 +125,20 @@ func runDesktop(codexPath, prompt string, verbose, wire bool) error {
 	go func() { _ = d.sup.Run(ctx) }()
 	go d.pollLog()
 
+	// Every reason the loop can end is recorded before anything is torn down.
+	// A live run had app-server exit after 33 seconds with
+	// exit_reason="stdio_connection_closed" — that is our end of the pipe
+	// closing, which happens here and nowhere else, and the journal said
+	// nothing about why we got here.
+	jour.Note("", "цикл окна работает")
 	err = app.Run(d.win)
+	if err != nil {
+		jour.Note("", "цикл окна завершился с ошибкой: "+err.Error())
+	} else {
+		jour.Note("", "цикл окна завершился без ошибки — окно закрыто или Quit")
+	}
+	jour.Note("", "закрываю app-server и журнал")
+
 	cancel()
 	client.Close()
 	jour.Close()
@@ -424,6 +437,7 @@ func (d *desktop) hideToTray() {
 }
 
 func (d *desktop) quit() {
+	d.jour.Note("", "запрошен выход (Quit)")
 	d.mu.Lock()
 	if d.cancel != nil {
 		d.cancel()

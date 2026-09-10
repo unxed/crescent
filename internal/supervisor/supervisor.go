@@ -434,6 +434,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	go s.heartbeat(ctx)
 	for {
 		if ctx.Err() != nil {
+			s.note("цикл наблюдения остановлен: " + ctx.Err().Error())
 			s.set(StateIdle, "остановлено", time.Time{})
 			return nil
 		}

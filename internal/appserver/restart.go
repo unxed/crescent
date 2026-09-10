@@ -112,8 +112,20 @@ func IsThreadGone(err error) bool {
 var threadIDRe = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
 
 // ThreadIDIn returns the thread id mentioned in a line, if any.
+//
+// Only ids introduced as a thread count. A log line also carries an
+// installation_id in the same UUID shape, and taking the first match created a
+// goal journal named after the installation — a file for a goal that does not
+// exist.
 func ThreadIDIn(line string) string {
-	return threadIDRe.FindString(line)
+	for _, key := range []string{"thread_id=", "threadId\":\"", "thread_id\":\"", "rollout for ", "projection for "} {
+		if i := strings.Index(line, key); i >= 0 {
+			if id := threadIDRe.FindString(line[i+len(key):]); id != "" {
+				return id
+			}
+		}
+	}
+	return ""
 }
 
 // ordinalRe matches the thread-store projection mismatch.
