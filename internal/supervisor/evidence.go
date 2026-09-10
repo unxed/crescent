@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"fmt"
 	"strings"
 	"time"
 )
@@ -155,6 +156,14 @@ func (e Evidence) Lamp(now time.Time) (Lamp, string) {
 // stood blocked: true of the account, misleading about the work. Each goal now
 // answers for itself.
 func GoalLamp(status, waiting string, spending bool) (Lamp, string) {
+	// Live evidence outranks the stored status. A goal answered a block and
+	// went back to work — running gh pr merge, spending tokens, reporting
+	// «Merge подтверждён» — while thread/goal/get still said blocked. The
+	// status lags the thread, and treating it as the truth called working
+	// goals stopped.
+	if spending {
+		return LampGreen, "работает"
+	}
 	switch {
 	case status == "":
 		return LampRed, "состояние неизвестно"
@@ -168,4 +177,32 @@ func GoalLamp(status, waiting string, spending bool) (Lamp, string) {
 		return LampYellow, waiting
 	}
 	return LampYellow, "стоит"
+}
+
+// Overall combines the goals' own lamps into one.
+//
+// The headline lamp used to be computed apart from the goals, and said
+// РАБОТАЕТ while every goal on screen stood still. A summary that contradicts
+// what it summarises is worse than no summary: green needs at least one goal
+// actually working, and red means not one of them is.
+func Overall(goals []Lamp) (Lamp, string) {
+	if len(goals) == 0 {
+		return LampRed, "целей нет"
+	}
+	green, red := 0, 0
+	for _, l := range goals {
+		switch l {
+		case LampGreen:
+			green++
+		case LampRed:
+			red++
+		}
+	}
+	switch {
+	case green > 0:
+		return LampGreen, fmt.Sprintf("работают %d из %d", green, len(goals))
+	case red == len(goals):
+		return LampRed, fmt.Sprintf("не работает ни одна из %d", len(goals))
+	}
+	return LampYellow, fmt.Sprintf("ни одна из %d не работает прямо сейчас", len(goals))
 }

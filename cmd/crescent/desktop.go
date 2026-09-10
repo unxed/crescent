@@ -468,8 +468,22 @@ func (d *desktop) render(s supervisor.Status) {
 	// than taken from whatever the supervisor last reported. That is the whole
 	// point: if the supervisor stops updating — hung, crashed, deadlocked —
 	// nobody is left to set the lamp red, so the lamp has to go red by itself.
-	lamp := s.Lamp()
-	d.lamp.Text.Set(lamp.Symbol() + "   " + lamp.Word() + " — " + s.Why())
+	// The headline is now a summary of the rows below it: it cannot claim work
+	// that none of the goals is doing. Only when nothing is known about any
+	// goal does it fall back to the evidence lamp, which speaks about the
+	// connection rather than about the work.
+	lamp, why := s.Lamp(), s.Why()
+	if len(s.PerGoal) > 0 {
+		lamps := make([]supervisor.Lamp, 0, len(s.PerGoal))
+		for _, sp := range s.PerGoal {
+			l, _ := sp.Lamp()
+			lamps = append(lamps, l)
+		}
+		if overall, sum := supervisor.Overall(lamps); lamp == supervisor.LampGreen || overall != supervisor.LampGreen {
+			lamp, why = overall, sum
+		}
+	}
+	d.lamp.Text.Set(lamp.Symbol() + "   " + lamp.Word() + " — " + why)
 	d.detail.Text.Set(s.Line())
 	counts := fmt.Sprintf("Отмечено целей: %d   •   перезапусков: %d   •   потрачено токенов: %d",
 		d.pins.Count(), s.Restarts, s.SpentSince)

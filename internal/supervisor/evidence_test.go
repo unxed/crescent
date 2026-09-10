@@ -206,3 +206,34 @@ func TestEachGoalHasItsOwnLamp(t *testing.T) {
 		}
 	}
 }
+
+// The headline said РАБОТАЕТ while every goal on screen stood still, because it
+// was computed apart from the goals. A summary that contradicts what it
+// summarises is worse than no summary.
+func TestHeadlineCannotBeGreenerThanTheGoals(t *testing.T) {
+	if l, why := Overall([]Lamp{LampRed, LampRed, LampYellow}); l == LampGreen {
+		t.Errorf("зелёная сводка при неработающих целях: %s", why)
+	}
+	if l, _ := Overall([]Lamp{LampRed, LampRed, LampRed}); l != LampRed {
+		t.Error("все цели стоят, а сводка не красная")
+	}
+	if l, why := Overall([]Lamp{LampRed, LampGreen}); l != LampGreen {
+		t.Errorf("одна работающая цель не делает сводку зелёной: %s", why)
+	}
+	if l, _ := Overall(nil); l != LampRed {
+		t.Error("без целей сводка должна быть красной")
+	}
+}
+
+// A goal that answered a block and went back to work kept showing [blocked]:
+// thread/goal/get lags the thread, and the stored status was outranking the
+// events arriving from that very goal.
+func TestLiveWorkOutranksStaleStatus(t *testing.T) {
+	if l, why := GoalLamp("blocked", "ждёт вас", true); l != LampGreen {
+		t.Errorf("работающая цель показана как %v (%s) из-за устаревшего статуса", l, why)
+	}
+	// Without live evidence the status still decides.
+	if l, _ := GoalLamp("blocked", "ждёт вас", false); l != LampRed {
+		t.Error("стоящая заблокированная цель должна быть красной")
+	}
+}
