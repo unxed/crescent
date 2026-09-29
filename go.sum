@@ -1,7 +1,7 @@
 github.com/go-webgpu/goffi v0.6.2 h1:xuMaUbqsNQ/xiyy5UwAKZb5vQZUDg9QRCrJIpHJaXSE=
 github.com/go-webgpu/goffi v0.6.2/go.mod h1:wfoxNsJkU+5RFbV1kNN1kunhc1lFHuJKK3zpgx08/uM=
-github.com/unxed/goWidgets v0.0.0-20260929191148-a4c47076749a h1:06oNB+zOxtGoN61BzPL1iLwzy6y3yl1vBjiolM/ma1g=
-github.com/unxed/goWidgets v0.0.0-20260929191148-a4c47076749a/go.mod h1:YENYohAplN5weFY9o00bHtBDae82XeeODwwgEvoRkR8=
+github.com/unxed/goWidgets v0.0.0-20260929193335-7c37ce31242f h1:4NY1qKjtwKJWX8PiRKPCXNg+UD9zYJtiS9KGwecze4s=
+github.com/unxed/goWidgets v0.0.0-20260929193335-7c37ce31242f/go.mod h1:YENYohAplN5weFY9o00bHtBDae82XeeODwwgEvoRkR8=
 github.com/unxed/pureffi v0.1.19 h1:ABOlYiXYOUfp4OtCi2pDcCJE8zsuximIsFlP8VJjtnI=
 github.com/unxed/pureffi v0.1.19/go.mod h1:c0oscxMMVH2fP90dNoW5jl6g1GAhoKJJc0/EJ2cH2xE=
 github.com/unxed/winkeys v0.1.1 h1:CeRhzQLrZtO2aVq8C8gPX1ySdbbvPombbUZ15cRjFTI=
