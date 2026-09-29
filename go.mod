@@ -15,4 +15,5 @@ require (
 require (
 	github.com/ebitengine/purego v0.9.0 // indirect
 	github.com/go-webgpu/goffi v0.6.2 // indirect
+	github.com/unxed/kiwi-go v0.1.0 // indirect
 )
