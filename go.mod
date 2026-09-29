@@ -1,6 +1,6 @@
 module github.com/unxed/crescent
 
-go 1.25.5
+go 1.26.0
 
 // goWidgets asks for purego; a `replace` inside a dependency is ignored by Go,
 // so the redirect to pureffi has to be repeated here, in the main module.
