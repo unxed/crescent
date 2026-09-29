@@ -1,7 +1,6 @@
 name: Nightly binaries
 
-# Ready-to-run binaries without a local Go toolchain: every push to main and
-# once a night, so there is always something recent to download and try.
+# Publish ready-to-run builds after every main commit and keep a daily refresh.
 on:
   push:
     branches: [main]
@@ -9,27 +8,28 @@ on:
     - cron: '0 2 * * *'
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      stamp: ${{ steps.meta.outputs.stamp }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.26'
 
-      # Everything cross-compiles: the GUI backends dlopen GTK at run time and
-      # bind Win32 through pureffi, so there is no cgo and no toolchain per
-      # target.
-      - name: Build
+      - name: Set release metadata
+        id: meta
+        run: echo "stamp=$(date -u +%Y%m%d).$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      # The backends load native libraries at runtime and do not use cgo, so
+      # one Linux runner can cross-compile every release target.
+      - name: Build binaries
         run: |
           mkdir -p dist
-          stamp="$(date -u +%Y%m%d).$(git rev-parse --short HEAD)"
-          echo "STAMP=$stamp" >> "$GITHUB_ENV"
-
           build() {
             os=$1; arch=$2; ext=$3; ldflags=$4
             echo "-> $os/$arch"
@@ -48,11 +48,30 @@ jobs:
           (cd dist && sha256sum * > SHA256SUMS.txt)
           ls -la dist
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: crescent-nightly
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: crescent-nightly
+          path: dist
+
       - name: Publish rolling nightly release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: nightly
-          name: "Nightly ${{ env.STAMP }}"
+          name: "Nightly ${{ needs.build.outputs.stamp }}"
           body: |
             Автоматическая сборка из main, коммит ${{ github.sha }}.
 
@@ -65,4 +84,36 @@ jobs:
             dist/crescent-*
             dist/SHA256SUMS.txt
           prerelease: true
+          draft: false
           make_latest: false
+          overwrite_files: true
+
+      - name: Verify published release and assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          expected=(
+            crescent-windows-amd64.exe
+            crescent-windows-arm64.exe
+            crescent-linux-amd64
+            crescent-linux-arm64
+            crescent-darwin-arm64
+            SHA256SUMS.txt
+          )
+          actual="$RUNNER_TEMP/nightly-assets.txt"
+          for attempt in 1 2 3 4 5 6; do
+            if gh release view nightly --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' > "$actual"; then
+              break
+            fi
+            if [ "$attempt" -eq 6 ]; then
+              echo "Nightly release is not visible after publication" >&2
+              exit 1
+            fi
+            sleep 5
+          done
+          for name in "${expected[@]}"; do
+            if ! grep -Fxq "$name" "$actual"; then
+              echo "Nightly release is missing asset: $name" >&2
+              exit 1
+            fi
+          done
