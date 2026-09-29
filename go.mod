@@ -7,7 +7,7 @@ go 1.25.5
 replace github.com/ebitengine/purego => github.com/unxed/pureffi v0.1.19
 
 require (
-	github.com/unxed/goWidgets v0.0.0-20260909023419-426c0b0e9e57
+	github.com/unxed/goWidgets v0.0.0-20260929191148-a4c47076749a
 	github.com/unxed/winkeys v0.1.1
 	golang.org/x/sys v0.31.0
 )
