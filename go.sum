@@ -1,9 +1,11 @@
 github.com/go-webgpu/goffi v0.6.2 h1:xuMaUbqsNQ/xiyy5UwAKZb5vQZUDg9QRCrJIpHJaXSE=
 github.com/go-webgpu/goffi v0.6.2/go.mod h1:wfoxNsJkU+5RFbV1kNN1kunhc1lFHuJKK3zpgx08/uM=
-github.com/unxed/kiwi-go v0.1.0 h1:JTZb5mZSrzevswnL3OxCgN8oODkbPLHX7LXxJnpJ9YU=
-github.com/unxed/kiwi-go v0.1.0/go.mod h1:9nseXE0X7yf8SPvY4N2KOD2FiPwa+uNBDztt1kqf0aY=
 github.com/unxed/goWidgets v0.0.0-20260929193536-717507772957 h1:7+pWvyXI+jcgKM22M0joGnP2Xf1Va0mNYdv79Y4KdHg=
 github.com/unxed/goWidgets v0.0.0-20260929193536-717507772957/go.mod h1:/7Xp67DkJCBI3tdPW81DbnUgN+W+tuujgNZGKUtJ6qo=
+github.com/unxed/goWidgets v0.0.0-20260930005237-213517533843 h1:US4OHBK/N7CALmnGs2s3ni3bb+StDHGpDFJyLnMt1Gk=
+github.com/unxed/goWidgets v0.0.0-20260930005237-213517533843/go.mod h1:/7Xp67DkJCBI3tdPW81DbnUgN+W+tuujgNZGKUtJ6qo=
+github.com/unxed/kiwi-go v0.1.0 h1:JTZb5mZSrzevswnL3OxCgN8oODkbPLHX7LXxJnpJ9YU=
+github.com/unxed/kiwi-go v0.1.0/go.mod h1:9nseXE0X7yf8SPvY4N2KOD2FiPwa+uNBDztt1kqf0aY=
 github.com/unxed/pureffi v0.1.19 h1:ABOlYiXYOUfp4OtCi2pDcCJE8zsuximIsFlP8VJjtnI=
 github.com/unxed/pureffi v0.1.19/go.mod h1:c0oscxMMVH2fP90dNoW5jl6g1GAhoKJJc0/EJ2cH2xE=
 github.com/unxed/winkeys v0.1.1 h1:CeRhzQLrZtO2aVq8C8gPX1ySdbbvPombbUZ15cRjFTI=
