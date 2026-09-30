@@ -77,9 +77,24 @@ func (r RateLimits) Windows() []RateLimitWindow {
 	return out
 }
 
-// Exhausted reports whether work is possible now, and when it will be.
+// Exhausted reports whether the account is out of allowance, and when it opens
+// again if the server said.
+//
+// It is stateless on purpose: every call judges the snapshot it is given and
+// nothing is remembered between snapshots, so a window that reopens before its
+// announced resetsAt — the limit is sometimes reset early, without warning — is
+// seen as open on the very next read. The announced time is only a hint for
+// display.
+//
+// The backend's own verdict, when it gave one, is final in both directions: an
+// explicit "not allowed" is a limit whatever the percentages say, and an
+// explicit "allowed" is permission whatever they say. Arithmetic is the
+// fallback for a server that does not say.
 func (r RateLimits) Exhausted() (bool, time.Time) {
-	if r.OrdinaryUsageAllowed != nil && !*r.OrdinaryUsageAllowed {
+	if r.OrdinaryUsageAllowed != nil {
+		if *r.OrdinaryUsageAllowed {
+			return false, time.Time{}
+		}
 		_, at := r.nearestReset()
 		return true, at
 	}
