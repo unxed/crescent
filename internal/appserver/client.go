@@ -50,6 +50,9 @@ type Client struct {
 	wire     func(dir, line string)
 	closed   bool
 	closeErr error
+	// done is closed when readLoop has finished, which includes the one and
+	// only cmd.Wait. Close waits on it instead of calling Wait itself.
+	done chan struct{}
 }
 
 type rpcRequest struct {
@@ -136,6 +139,7 @@ func Dial(ctx context.Context, o Options) (*Client, error) {
 		pending:  map[int]chan rpcResponse{},
 		notify:   o.OnNotification,
 		activity: o.OnActivity,
+		done:     make(chan struct{}),
 	}
 	// A single message can carry a whole file's worth of diff.
 	c.out.Buffer(make([]byte, 0, 256<<10), 64<<20)
@@ -264,6 +268,7 @@ func (c *Client) SetStderrSink(fn func(string)) {
 // readLoop dispatches replies to whoever is waiting and hands notifications to
 // the callback.
 func (c *Client) readLoop() {
+	defer close(c.done)
 	for c.out.Scan() {
 		raw := c.out.Text()
 		c.recordWire("<<", raw)
@@ -382,26 +387,26 @@ func (c *Client) SetActivitySink(fn func(Activity)) {
 	c.mu.Unlock()
 }
 
-// Close shuts the server down.
+// Close shuts the server down. readLoop is the only caller of cmd.Wait (a
+// second concurrent Wait is a data race and an error), so Close closes stdin,
+// fails whoever is still waiting for a reply, and waits for readLoop to finish;
+// if the server ignores the closed stdin for 5 seconds it is killed. Safe to
+// call more than once and after the stream has already ended.
 func (c *Client) Close() error {
-	c.mu.Lock()
-	already := c.closed
-	c.closed = true
-	c.mu.Unlock()
-	if !already {
-		_ = c.in.Close()
-	}
-	// Wait may already have been called by readLoop when the stream ended;
-	// calling it twice is an error, so a kill is enough here.
-	done := make(chan error, 1)
-	go func() { done <- c.cmd.Wait() }()
+	c.fail(errors.New("appserver: клиент закрыт"))
+	_ = c.in.Close()
 	select {
-	case <-done:
-		return nil
+	case <-c.done:
 	case <-time.After(5 * time.Second):
 		if c.cmd.Process != nil {
 			_ = c.cmd.Process.Kill()
 		}
-		return nil
+		// A grandchild holding the stdout pipe can keep readLoop reading after
+		// the kill; do not hang on it.
+		select {
+		case <-c.done:
+		case <-time.After(2 * time.Second):
+		}
 	}
+	return nil
 }
