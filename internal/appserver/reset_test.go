@@ -150,9 +150,7 @@ func TestClientSeesSpontaneousResetBeforeResetsAt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Not c.Close(): it calls cmd.Wait concurrently with readLoop's own Wait,
-	// which -race reports. Cancelling ctx kills the fake server instead.
-	_ = c
+	defer c.Close()
 
 	at := time.Now().Add(3 * time.Hour).Unix()
 	body := func(used int, allowed string) string {
@@ -181,5 +179,50 @@ func TestClientSeesSpontaneousResetBeforeResetsAt(t *testing.T) {
 		if limited, _ := limits.Exhausted(); limited != st.limited {
 			t.Errorf("%s: limited=%v, ожидалось %v", st.name, limited, st.limited)
 		}
+	}
+}
+
+// Close must not call cmd.Wait next to readLoop's own Wait (-race reports it),
+// must release a call that is still waiting for its reply, and must be safe to
+// repeat.
+func TestCloseIsRaceFreeReleasesPendingCallsAndRepeats(t *testing.T) {
+	t.Setenv("CRESCENT_FAKE_CODEX", "1")
+	t.Setenv("CRESCENT_FAKE_LIMITS", filepath.Join(t.TempDir(), "absent.json"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	c, err := Dial(ctx, Options{CodexPath: os.Args[0]})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A call no one will answer: the fake server only replies to requests it
+	// reads, so register one directly and let Close release it.
+	ch := make(chan rpcResponse, 1)
+	c.mu.Lock()
+	c.pending[1<<20] = ch
+	c.mu.Unlock()
+
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		_ = c.Close()
+		_ = c.Close()
+	}()
+	select {
+	case <-closed:
+	case <-time.After(30 * time.Second):
+		t.Fatal("Close не вернулся")
+	}
+	select {
+	case resp := <-ch:
+		if resp.Error == nil {
+			t.Error("ожидающий вызов освобождён без ошибки")
+		}
+	default:
+		t.Error("Close не освободил ожидающий вызов")
+	}
+	if _, err := c.Call(ctx, "account/rateLimits/read", nil); err == nil {
+		t.Error("вызов после Close прошёл")
 	}
 }
